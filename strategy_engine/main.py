@@ -81,6 +81,9 @@ class StrategyEngine:
         # Track order_id -> trade_id mapping for exit tracking
         self._order_to_trade: Dict[str, str] = {}
 
+        # Position monitoring task
+        self._position_monitor_task: Optional[asyncio.Task] = None
+
     async def initialize(self):
         """Initialize all components."""
         logger.info("Initializing WEEX AI Strategy Engine...")
@@ -315,9 +318,10 @@ class StrategyEngine:
             f"- Strategies: Turtle (20/55-day), Trend, MR\n\n"
             f"**Self-Evolving RL System:**\n"
             f"- Triple Memory: Episodic, Semantic, Procedural\n"
-            f"- Reflection Agent: Position review (hourly)\n"
-            f"- Judge Agent: Trade scoring\n"
-            f"- Learner Agent: Pattern extraction & parameter evolution",
+            f"- Position Monitor: Detects trade closes (60s interval)\n"
+            f"- Position Review Loop: Hourly position reflection\n"
+            f"- Trade Outcome Loop: Scoring & LLM reflection on close\n"
+            f"- Consolidation Loop: Daily pattern extraction",
             color=0x00FF00,
         )
 
@@ -339,6 +343,10 @@ class StrategyEngine:
         await self.consolidation_loop.start()
         logger.info("Learning loops started (Position Review: hourly, Consolidation: daily)")
 
+        # Start position monitor for trade outcome detection
+        self._position_monitor_task = asyncio.create_task(self._monitor_positions())
+        logger.info("Position monitor started (checks every 60 seconds for closed positions)")
+
         # Start main loop
         await self._main_loop()
 
@@ -355,7 +363,16 @@ class StrategyEngine:
             color=0xFF6B6B,
         )
 
-        # Stop learning loops first
+        # Stop position monitor
+        if self._position_monitor_task:
+            self._position_monitor_task.cancel()
+            try:
+                await self._position_monitor_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("Position monitor stopped")
+
+        # Stop learning loops
         if self.position_review_loop:
             await self.position_review_loop.stop()
 
@@ -595,6 +612,119 @@ class StrategyEngine:
                 str(e),
                 f"Failed to execute {signal.action.value} {signal.symbol}",
             )
+
+    async def _monitor_positions(self):
+        """Monitor positions to detect trade closes.
+
+        Runs every 60 seconds to check if any tracked trades have been closed.
+        When detected, calls trade_outcome_loop.on_trade_closed().
+        """
+        logger.info("Position monitor started (checking every 60 seconds)")
+        symbol = self.settings.default_symbol
+
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # Check every 60 seconds
+
+                if not self._order_to_trade:
+                    continue  # No trades to monitor
+
+                # Get current positions
+                positions = await self.weex_client.get_positions(symbol)
+
+                # Get current ticker for exit price
+                ticker = await self.weex_client.get_ticker(symbol)
+                current_price = float(ticker.get("last", 0))
+
+                # Get current regime
+                current_regime = self._last_regime.copy() if self._last_regime else {}
+
+                # Find position IDs that are still open
+                open_position_ids = set()
+                if isinstance(positions, list):
+                    for p in positions:
+                        total = float(p.get("total", 0))
+                        if total != 0:
+                            # Position is still open
+                            open_position_ids.add(str(p.get("positionId", "")))
+
+                # Check each tracked trade
+                closed_trades = []
+                for order_id, trade_id in list(self._order_to_trade.items()):
+                    # Get the trade record to check its status
+                    trade = await self.trade_memory.get_trade(trade_id)
+                    if not trade:
+                        # Trade not found, remove from tracking
+                        del self._order_to_trade[order_id]
+                        continue
+
+                    if trade.status != TradeStatus.OPEN:
+                        # Already processed, remove from tracking
+                        del self._order_to_trade[order_id]
+                        continue
+
+                    # Check if this position is still open
+                    # We check by order ID or by looking at open positions
+                    position_closed = True
+                    for p in (positions if isinstance(positions, list) else []):
+                        # Check if position matches this trade
+                        if abs(float(p.get("total", 0))) > 0:
+                            # There's still an open position, assume trade is still active
+                            position_closed = False
+                            break
+
+                    if position_closed:
+                        closed_trades.append((order_id, trade_id))
+
+                # Process closed trades
+                for order_id, trade_id in closed_trades:
+                    logger.info(f"Detected closed position for trade {trade_id}")
+
+                    # Determine exit reason - check order history
+                    exit_reason = ExitReason.MANUAL  # Default
+                    try:
+                        order_history = await self.weex_client.get_order_history(symbol, limit=10)
+                        if isinstance(order_history, list):
+                            for order in order_history:
+                                if str(order.get("orderId")) == order_id:
+                                    # Check order details for stop/tp hits
+                                    order_type = order.get("orderType", "").lower()
+                                    if "stop" in order_type:
+                                        exit_reason = ExitReason.STOP_LOSS
+                                    elif "profit" in order_type or "tp" in order_type:
+                                        exit_reason = ExitReason.TAKE_PROFIT
+                                    break
+                    except Exception as e:
+                        logger.warning(f"Could not determine exit reason: {e}")
+
+                    # Call trade outcome loop
+                    await self.trade_outcome_loop.on_trade_closed(
+                        trade_id=trade_id,
+                        exit_price=current_price,
+                        exit_reason=exit_reason,
+                        exit_regime=current_regime,
+                    )
+
+                    # Remove from tracking
+                    del self._order_to_trade[order_id]
+
+                    # Notify Discord
+                    await self.discord.send_status(
+                        "Position Closed Detected",
+                        f"Trade `{trade_id}` has been closed.\n"
+                        f"Exit reason: {exit_reason.value}\n"
+                        f"Trade outcome loop triggered.",
+                        color=0x3498DB,
+                    )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in position monitor: {e}")
+                # Don't spam errors, wait longer before retry
+                await asyncio.sleep(30)
+
+        logger.info("Position monitor stopped")
 
 
 async def main():

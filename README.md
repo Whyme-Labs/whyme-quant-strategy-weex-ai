@@ -126,6 +126,7 @@ Our system implements a **Reflexion-style** architecture that learns from every 
 
 | Loop | Frequency | Purpose |
 |------|-----------|---------|
+| **Position Monitor** | Every 60 seconds | Detects when positions are closed, triggers Trade Outcome Loop |
 | **Position Review** | Every 1 hour | Check if positions should be adjusted based on regime changes |
 | **Trade Outcome** | On close | Record P&L, score trade, generate LLM reflection, extract lessons |
 | **Consolidation** | Daily | Extract patterns, generate insights, apply parameter evolutions |

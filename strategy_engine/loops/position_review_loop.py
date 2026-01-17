@@ -156,8 +156,8 @@ class PositionReviewLoop:
             List of position dictionaries
         """
         try:
-            # Get all positions (implementation depends on WEEX API)
-            response = await self.weex_client.get_position(self.symbol)
+            # Get all positions from WEEX API
+            response = await self.weex_client.get_positions(self.symbol)
 
             if not response:
                 return []

@@ -113,9 +113,10 @@ WEEX_API_URL=https://api.weex.com
 
 ### Learning Loops
 
-1. **Position Review Loop** - Runs hourly, checks if positions should be adjusted based on regime changes
-2. **Trade Outcome Loop** - Triggered on trade close, scores trade and generates LLM reflection
-3. **Consolidation Loop** - Runs daily, extracts patterns and applies parameter evolutions
+1. **Position Monitor** - Runs every 60 seconds, detects when positions are closed and triggers Trade Outcome Loop
+2. **Position Review Loop** - Runs hourly, checks if positions should be adjusted based on regime changes
+3. **Trade Outcome Loop** - Triggered on trade close, scores trade and generates LLM reflection
+4. **Consolidation Loop** - Runs daily, extracts patterns and applies parameter evolutions
 
 ## Key Directories
 
