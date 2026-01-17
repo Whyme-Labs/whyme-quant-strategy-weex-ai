@@ -345,7 +345,7 @@ class StrategyEngine:
 
         # Start position monitor for trade outcome detection
         self._position_monitor_task = asyncio.create_task(self._monitor_positions())
-        logger.info("Position monitor started (checks every 60 seconds for closed positions)")
+        logger.info("Position monitor started (active only when positions are open)")
 
         # Start main loop
         await self._main_loop()
@@ -616,18 +616,20 @@ class StrategyEngine:
     async def _monitor_positions(self):
         """Monitor positions to detect trade closes.
 
-        Runs every 60 seconds to check if any tracked trades have been closed.
+        Only actively monitors when there are open positions to track.
         When detected, calls trade_outcome_loop.on_trade_closed().
         """
-        logger.info("Position monitor started (checking every 60 seconds)")
+        logger.info("Position monitor started")
         symbol = self.settings.default_symbol
 
         while self._running:
             try:
-                await asyncio.sleep(60)  # Check every 60 seconds
-
+                # Only check frequently when there are trades to monitor
                 if not self._order_to_trade:
-                    continue  # No trades to monitor
+                    await asyncio.sleep(300)  # Sleep 5 minutes when no positions
+                    continue
+
+                await asyncio.sleep(60)  # Check every 60 seconds when monitoring
 
                 # Get current positions
                 positions = await self.weex_client.get_positions(symbol)
