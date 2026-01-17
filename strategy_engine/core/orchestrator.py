@@ -171,11 +171,13 @@ class AgentOrchestrator:
             logger.debug("Routing to Trend Following strategy")
             return await self._run_agent("trend_following", context)
 
+        elif recommended == "turtle_trading" and "turtle_trading" in self.agents:
+            logger.debug("Routing to Turtle Trading strategy (20/55-day breakouts)")
+            return await self._run_agent("turtle_trading", context)
+
         elif recommended == "neutral":
-            # In neutral regime, we can either:
-            # 1. Skip trading (conservative)
-            # 2. Check both strategies and take the stronger signal
-            logger.debug("Neutral regime - checking both strategies")
+            # In neutral regime, check multiple strategies and take the strongest signal
+            logger.debug("Neutral regime - checking all strategies")
 
             signals = []
 
@@ -191,10 +193,21 @@ class AgentOrchestrator:
                     tf_result["strategy_source"] = "trend_following"
                     signals.append(tf_result)
 
-            # Return strongest signal (by position size as proxy for confidence)
+            # Also check Turtle Trading for breakout opportunities
+            if "turtle_trading" in self.agents:
+                turtle_result = await self._run_agent("turtle_trading", context)
+                if turtle_result.get("signal"):
+                    turtle_result["strategy_source"] = "turtle_trading"
+                    signals.append(turtle_result)
+
+            # Return strongest signal (by confidence or position size)
             if signals:
-                best = max(signals, key=lambda s: s.get("signal", {}).get("position_size_pct", 0))
-                logger.debug(f"Best signal in neutral regime: {best.get('strategy_source')}")
+                best = max(signals, key=lambda s: (
+                    s.get("confidence", 0),
+                    s.get("signal", {}).get("position_size_pct", 0)
+                ))
+                logger.debug(f"Best signal in neutral regime: {best.get('strategy_source')} "
+                           f"(confidence: {best.get('confidence', 0):.2f})")
                 return best
 
             return None

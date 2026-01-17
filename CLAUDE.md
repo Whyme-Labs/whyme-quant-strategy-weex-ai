@@ -50,30 +50,50 @@ WEEX_API_URL=https://api.weex.com
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     WEEX AI Strategy Engine                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  Market Data → Regime Detector → Strategy Selection → Portfolio Manager │
-│                     │                    │                    │         │
-│                     ▼                    ▼                    ▼         │
-│              (Trend/Range?)    (Mean Reversion    (Dynamic confidence   │
-│                                 or Trend Following) threshold)          │
-│                                        │                    │           │
-│                                        ▼                    ▼           │
-│                              Risk Manager → Execution Agent → WEEX API  │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      WEEX AI Strategy Engine                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │              Services Layer (Multi-Timeframe + Redis)                │    │
+│  │  MarketData → Indicators → PatternDetector → AlphaGenerator         │    │
+│  │  (1H,4H,1D)    (EMA,RSI,BB)   (H&S,VCP)       (Aggregated Signals)  │    │
+│  └──────────────────────────────┬──────────────────────────────────────┘    │
+│                                 │                                            │
+│                                 ▼                                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                       Agent Orchestrator                              │   │
+│  │  Regime Detector → Strategy Selection → Portfolio Manager            │   │
+│  │       │                    │                    │                     │   │
+│  │       ▼                    ▼                    ▼                     │   │
+│  │  (Trend/Range?)    ┌──────────────┐    (Dynamic Confidence)          │   │
+│  │                    │ MeanRevert   │                                   │   │
+│  │                    │ TrendFollow  │                                   │   │
+│  │                    │ TurtleTrading│                                   │   │
+│  │                    └──────────────┘                                   │   │
+│  │                           │                                           │   │
+│  │                    Risk Manager → Execution Agent → WEEX API          │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Services Layer
+
+1. **RedisClient** - Cache persistence for candle data (survives restarts)
+2. **MarketDataService** - Multi-timeframe OHLCV (1H, 4H, 1D) with auto-refresh
+3. **IndicatorsService** - Technical indicators (EMA, RSI, BB, ATR)
+4. **PatternDetector** - Chart patterns (Head & Shoulders, VCP, Double Top/Bottom)
+5. **AlphaGenerator** - Multi-timeframe signal aggregation
 
 ### Key Agents
 
 1. **Regime Detector** - Classifies market into volatility/trend/volume regimes
-2. **Mean Reversion Agent** - Fades extremes (RSI/BB on higher timeframes)
-3. **Trend Following Agent** - Rides trends (breakouts, VCP patterns)
-4. **Portfolio Manager** - Dynamic confidence threshold gatekeeper
-5. **Risk Manager** - Position sizing and leverage checks
-6. **Execution Agent** - Order optimization and AI log recording
+2. **Mean Reversion Agent** - Fades extremes (RSI/BB on 4H timeframe)
+3. **Trend Following Agent** - Rides trends (VCP, EMA alignment)
+4. **Turtle Trading Agent** - Classic 20/55-day breakouts on daily candles
+5. **Portfolio Manager** - Dynamic confidence threshold gatekeeper
+6. **Risk Manager** - Position sizing and leverage checks
+7. **Execution Agent** - Order optimization and AI log recording
 
 ## Key Directories
 
@@ -82,11 +102,25 @@ WEEX_API_URL=https://api.weex.com
 │   ├── client.py          # Main API client
 │   └── auth.py            # Authentication (HMAC signing)
 ├── strategy_engine/       # Trading strategy
+│   ├── main.py            # Entry point
 │   ├── core/              # Orchestrator, base classes
+│   ├── services/          # Shared services (NEW)
+│   │   ├── redis_client.py      # Redis cache persistence
+│   │   ├── market_data_service.py # Multi-timeframe OHLCV
+│   │   ├── indicators_service.py  # Technical indicators
+│   │   ├── pattern_detector.py    # Chart patterns
+│   │   └── alpha_generator.py     # Signal aggregation
 │   └── agents/            # AI agents
+│       ├── turtle_trading.py      # Turtle breakout system
+│       ├── portfolio_manager.py   # Dynamic gatekeeper
+│       └── ...
 ├── ai_logging/            # AI decision logging (hackathon requirement)
+├── shared/                # Shared utilities
+│   ├── config.py          # Pydantic settings
+│   ├── discord.py         # Discord notifications
+│   └── llm.py             # LLM analysis
 ├── scripts/               # Utility scripts
-│   └── test_connection.py # Connection test
+│   └── deploy.sh          # Production deployment
 ├── tests/                 # Unit tests
 └── docs/                  # Documentation
 ```
@@ -117,7 +151,9 @@ python -m strategy_engine.main
 
 ## Important Notes
 
-- Use higher timeframes (4H+) for RSI/Bollinger Bands to reduce noise
+- **Multi-Timeframe**: Use 1H for entry timing, 4H for medium signals, 1D for Turtle breakouts
+- **Redis Persistence**: Candle data survives container restarts (check `docker exec weex-redis redis-cli keys "candles:*"`)
+- **Housekeeping**: Runs every 5 minutes, trims cache to limits
 - Portfolio Manager acts as gatekeeper - rejects low-confidence signals
 - Dynamic confidence threshold adjusts based on:
   - Market volatility
@@ -141,7 +177,9 @@ python -m strategy_engine.main
 - The client auto-converts: `BTCUSDT` -> `cmt_btcusdt`
 
 **Kline Granularity Values:**
-`1min`, `5min`, `15min`, `30min`, `1h`, `4h`, `12h`, `1day`, `1week`
+`1m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`, `1w`, `1M`
+
+**Note:** Use lowercase format (e.g., `1d` not `1D` or `1day`)
 
 ## Server Deployment
 

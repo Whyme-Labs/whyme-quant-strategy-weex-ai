@@ -10,6 +10,11 @@ websockets>=12.0
 pandas>=2.2.0
 numpy>=1.26.0
 
+# Technical Analysis
+# Note: pandas-ta unavailable on PyPI - using fallback calculations
+# pandas-ta  # Optional - install manually from GitHub if needed
+scipy>=1.11.0
+
 # Redis
 redis>=5.0.0
 

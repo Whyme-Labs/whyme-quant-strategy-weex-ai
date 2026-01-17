@@ -15,65 +15,80 @@ A multi-agent AI trading strategy for the **WEEX AI Hackathon: AI Wars Alpha Awa
 Based on research insights: *"There are only 2 trading strategies in the world: Mean Reversion and Trend Following. Some regimes reward trend following. Others reward mean reversion. Running both smooths returns and reduces drawdowns."*
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    WEEX AI Multi-Agent Strategy                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  ┌──────────────────┐    ┌──────────────────┐                           │
-│  │  Market Data     │───▶│  Regime Detector │                           │
-│  │  Collector       │    │  Agent           │                           │
-│  └──────────────────┘    └────────┬─────────┘                           │
-│                                   │                                      │
-│                    ┌──────────────┴───────────────┐                     │
-│                    ▼                              ▼                      │
-│  ┌──────────────────────┐      ┌──────────────────────┐                │
-│  │  Mean Reversion      │      │  Trend Following     │                │
-│  │  Strategy Agent      │      │  Strategy Agent      │                │
-│  │  - Fade extremes     │      │  - Breakout entry    │                │
-│  │  - High win rate     │      │  - Ride trends       │                │
-│  │  - RSI + Bollinger   │      │  - VCP + EMA (8/20/50)│                │
-│  └──────────┬───────────┘      └──────────┬───────────┘                │
-│             │                              │                             │
-│             └──────────────┬───────────────┘                            │
-│                            ▼                                             │
-│  ┌─────────────────────────────────────────────────┐                   │
-│  │           Risk Manager Agent                     │                   │
-│  │  - Position sizing (max 20x leverage)            │                   │
-│  │  - Drawdown protection                           │                   │
-│  └──────────────────────────┬──────────────────────┘                   │
-│                             ▼                                            │
-│  ┌─────────────────────────────────────────────────┐                   │
-│  │           Execution Agent                        │                   │
-│  │  - Order type optimization                       │                   │
-│  │  - AI Log recording (mandatory)                  │                   │
-│  └─────────────────────────────────────────────────┘                   │
-│                             │                                            │
-│  ┌──────────────────────────┴──────────────────────┐                   │
-│  │              AI Logging System                   │                   │
-│  │  (Mandatory for hackathon verification)          │                   │
-│  └─────────────────────────────────────────────────┘                   │
-│                             │                                            │
-│  ┌──────────────────────────┴──────────────────────┐                   │
-│  │              WEEX API Client                     │                   │
-│  └─────────────────────────────────────────────────┘                   │
-└─────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │  WEEX Exchange  │
-                    │  (Futures API)  │
-                    └─────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      WEEX AI Multi-Agent Strategy Engine                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                    Services Layer (Multi-Timeframe)                  │    │
+│  │  ┌──────────────┐ ┌──────────────┐ ┌────────────┐ ┌──────────────┐  │    │
+│  │  │ MarketData   │ │ Indicators   │ │  Pattern   │ │    Alpha     │  │    │
+│  │  │ Service      │ │ Service      │ │  Detector  │ │  Generator   │  │    │
+│  │  │ (1H,4H,1D)   │ │ (EMA,RSI,BB) │ │ (H&S,VCP)  │ │ (Aggregated) │  │    │
+│  │  └──────┬───────┘ └──────┬───────┘ └─────┬──────┘ └──────┬───────┘  │    │
+│  │         └─────────────────┴───────────────┴──────────────┘          │    │
+│  │                              │ Redis Persistence                    │    │
+│  └──────────────────────────────┼──────────────────────────────────────┘    │
+│                                 ▼                                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                       Agent Orchestrator                              │   │
+│  │  ┌────────────────┐                                                   │   │
+│  │  │ Regime Detector│ ──▶ Classifies: Trending / Ranging / Volatile    │   │
+│  │  └───────┬────────┘                                                   │   │
+│  │          │                                                            │   │
+│  │   ┌──────┴──────┬─────────────┬────────────────┐                     │   │
+│  │   ▼             ▼             ▼                ▼                      │   │
+│  │ ┌────────┐ ┌─────────┐ ┌───────────┐ ┌─────────────────┐             │   │
+│  │ │ Mean   │ │ Trend   │ │  Turtle   │ │ Portfolio Mgr   │             │   │
+│  │ │Revert  │ │Following│ │ Trading   │ │ (Gatekeeper)    │             │   │
+│  │ │(RSI/BB)│ │(VCP/EMA)│ │(20/55 Day)│ │ Dynamic Conf.   │             │   │
+│  │ └────────┘ └─────────┘ └───────────┘ └─────────────────┘             │   │
+│  │                           │                                           │   │
+│  │   ┌───────────────────────┴───────────────────────┐                  │   │
+│  │   ▼                                               ▼                   │   │
+│  │ ┌────────────────┐                    ┌──────────────────┐           │   │
+│  │ │ Risk Manager   │                    │ Execution Agent  │           │   │
+│  │ │ (Max 20x Lev)  │                    │ (AI Log Upload)  │           │   │
+│  │ └────────────────┘                    └──────────────────┘           │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                   │                                          │
+│                                   ▼                                          │
+│                    ┌─────────────────────────────┐                          │
+│                    │        WEEX API Client       │                          │
+│                    │  (REST + AI Log Upload)      │                          │
+│                    └─────────────────────────────┘                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │   WEEX Exchange     │
+                         │   (Futures API)     │
+                         └─────────────────────┘
 ```
 
 ## Strategy: Regime-Based Multi-Agent Trading
 
 This strategy uses specialized AI agents that collaborate based on detected market regimes:
 
+### Services Layer
+
+| Service | Purpose | Features |
+|---------|---------|----------|
+| **MarketDataService** | Multi-timeframe OHLCV data | 1H, 4H, 1D candles with Redis persistence |
+| **IndicatorsService** | Technical indicator calculations | EMA, RSI, Bollinger Bands, ATR |
+| **PatternDetector** | Chart pattern recognition | Head & Shoulders, VCP, Double Top/Bottom |
+| **AlphaGenerator** | Signal aggregation | Multi-timeframe signal scoring |
+| **RedisClient** | Cache persistence | Survives container restarts |
+
+### AI Agents
+
 | Agent | Role | Strategy Logic |
 |-------|------|----------------|
 | **Regime Detector** | Classifies market (volatility, trend, volume) | EMA slopes, ATR, volume analysis |
-| **Mean Reversion** | Buy low, sell high (fade extremes) | RSI + Bollinger Bands, high win rate |
-| **Trend Following** | Buy high, sell higher (ride trends) | 20-day breakout, VCP pattern, EMA alignment |
+| **Mean Reversion** | Buy low, sell high (fade extremes) | RSI + Bollinger Bands on 4H timeframe |
+| **Trend Following** | Buy high, sell higher (ride trends) | VCP pattern, EMA (8/20/50) alignment |
+| **Turtle Trading** | Classic breakout system | 20/55-day channel breakouts on daily candles |
+| **Portfolio Manager** | Dynamic confidence gatekeeper | Adjusts threshold based on volatility, drawdown |
 | **Risk Manager** | Position sizing, leverage control | Max 20x, drawdown protection |
 | **Execution Agent** | Order optimization, AI logging | Limit vs market orders |
 
@@ -160,11 +175,19 @@ whyme-quant-strategy-weex-ai/
 │   ├── core/                 # Core abstractions
 │   │   ├── base.py          # Signal & SignalAction classes
 │   │   └── orchestrator.py  # Regime-based agent orchestrator
+│   ├── services/            # Shared Services Layer
+│   │   ├── redis_client.py   # Redis cache persistence
+│   │   ├── market_data_service.py # Multi-timeframe OHLCV with caching
+│   │   ├── indicators_service.py  # Technical indicator calculations
+│   │   ├── pattern_detector.py    # Chart pattern detection
+│   │   └── alpha_generator.py     # Signal aggregation & scoring
 │   └── agents/              # AI Agents (Multi-Agent System)
 │       ├── base_agent.py     # Base agent class
 │       ├── regime_detector.py # Market regime classification
 │       ├── mean_reversion.py # Mean reversion strategy (RSI, BB)
 │       ├── trend_following.py # Trend following strategy (VCP, EMA)
+│       ├── turtle_trading.py # Classic Turtle breakout (20/55 day)
+│       ├── portfolio_manager.py # Dynamic confidence gatekeeper
 │       ├── risk_manager.py   # Position sizing & risk control
 │       ├── execution.py      # Order execution optimization
 │       └── market_analyst.py # Legacy market analysis (fallback)
@@ -176,12 +199,31 @@ whyme-quant-strategy-weex-ai/
 │   ├── uploader.py          # WEEX AI log uploader
 │   └── models.py            # Log data models
 ├── shared/                   # Shared Utilities
-│   └── config.py            # Pydantic settings
+│   ├── config.py            # Pydantic settings
+│   ├── discord.py           # Discord webhook notifications
+│   └── llm.py               # LLM analysis client
 ├── docker-compose.yml        # Docker setup (strategy + redis)
 ├── Dockerfile               # Strategy engine container
 ├── requirements.txt
 └── README.md
 ```
+
+## Key Features
+
+### Multi-Timeframe Analysis
+- **1H**: Short-term trend detection, entry timing
+- **4H**: Medium-term signals, Mean Reversion indicators
+- **1D**: Long-term trend, Turtle Trading breakouts
+
+### Redis Persistence
+- Candle data survives container restarts
+- Fast startup (loads from cache vs API)
+- TTL-based expiry (1D: 7 days, 4H: 3 days, 1H: 1 day)
+- Automatic housekeeping every 5 minutes
+
+### Real-Time Notifications
+- Discord webhooks for trade signals, regime changes, errors
+- LLM-powered trade analysis and explanations
 
 ## AI Logging (Critical for Hackathon)
 

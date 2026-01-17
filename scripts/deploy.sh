@@ -23,9 +23,17 @@ if [ ! -f ".env" ]; then
     exit 1
 fi
 
-echo "Step 1: Syncing code to server..."
-rsync -avz --exclude '.git' --exclude '__pycache__' --exclude '*.pyc' --exclude '.env' \
-    ./ "$SERVER_USER@$SERVER_IP:$APP_DIR/"
+echo "Step 1: Creating tarball and syncing to server..."
+# Create temporary tarball excluding unwanted files
+tar --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' --exclude='.env' \
+    --exclude='logs' --exclude='.venv' --exclude='node_modules' \
+    -czf /tmp/weex-deploy.tar.gz .
+
+# Create app directory and extract
+ssh "$SERVER_USER@$SERVER_IP" "mkdir -p $APP_DIR"
+scp /tmp/weex-deploy.tar.gz "$SERVER_USER@$SERVER_IP:$APP_DIR/"
+ssh "$SERVER_USER@$SERVER_IP" "cd $APP_DIR && tar -xzf weex-deploy.tar.gz && rm weex-deploy.tar.gz"
+rm /tmp/weex-deploy.tar.gz
 
 echo "Step 2: Syncing .env file..."
 scp .env "$SERVER_USER@$SERVER_IP:$APP_DIR/.env"

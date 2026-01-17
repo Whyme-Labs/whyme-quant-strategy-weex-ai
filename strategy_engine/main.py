@@ -11,6 +11,13 @@ from shared.llm import get_llm_analyzer
 from weex_client import WeexClient
 from ai_logging import AILogUploader, get_ai_logger
 from .core.orchestrator import AgentOrchestrator
+from .services import (
+    RedisClient,
+    MarketDataService,
+    IndicatorsService,
+    PatternDetector,
+    AlphaGenerator,
+)
 from .agents import (
     MarketAnalystAgent,
     RiskManagerAgent,
@@ -18,6 +25,7 @@ from .agents import (
     RegimeDetectorAgent,
     MeanReversionAgent,
     TrendFollowingAgent,
+    TurtleTradingAgent,
     PortfolioManagerAgent,
 )
 
@@ -37,6 +45,15 @@ class StrategyEngine:
         self._shutdown_event = asyncio.Event()
         self._last_regime: dict = {}
 
+        # Redis client for cache persistence
+        self.redis_client: Optional[RedisClient] = None
+
+        # New services for multi-timeframe quant system
+        self.market_data_service: Optional[MarketDataService] = None
+        self.indicators_service: Optional[IndicatorsService] = None
+        self.pattern_detector: Optional[PatternDetector] = None
+        self.alpha_generator: Optional[AlphaGenerator] = None
+
     async def initialize(self):
         """Initialize all components."""
         logger.info("Initializing WEEX AI Strategy Engine...")
@@ -52,6 +69,41 @@ class StrategyEngine:
         # Test connection
         if not await self.weex_client.test_connection():
             raise Exception("Failed to connect to WEEX API")
+
+        # Initialize Redis client for cache persistence
+        self.redis_client = RedisClient(url=self.settings.redis_url)
+        if await self.redis_client.connect():
+            logger.info("Redis client connected for cache persistence")
+        else:
+            logger.warning("Redis unavailable - running with in-memory cache only")
+
+        # Initialize multi-timeframe services
+        self.market_data_service = MarketDataService(
+            weex_client=self.weex_client,
+            redis_client=self.redis_client,  # Pass Redis for persistence
+            symbols=[self.settings.default_symbol],
+            default_timeframes=["1h", "4h", "1d"],
+        )
+        await self.market_data_service.start()
+        logger.info("Market Data Service initialized with 1H, 4H, 1D timeframes")
+
+        self.indicators_service = IndicatorsService(
+            market_data_service=self.market_data_service,
+        )
+        logger.info("Indicators Service initialized with pandas-ta")
+
+        self.pattern_detector = PatternDetector(
+            min_pattern_bars=20,
+            peak_distance=5,
+        )
+        logger.info("Pattern Detector initialized")
+
+        self.alpha_generator = AlphaGenerator(
+            market_data_service=self.market_data_service,
+            indicators_service=self.indicators_service,
+            pattern_detector=self.pattern_detector,
+        )
+        logger.info("Alpha Generator initialized")
 
         # Initialize AI log uploader
         self.ai_uploader = AILogUploader(
@@ -102,6 +154,25 @@ class StrategyEngine:
             }),
         )
 
+        # Turtle Trading Agent - Classic breakout system with REAL daily candles
+        self.orchestrator.register_agent(
+            "turtle_trading",
+            TurtleTradingAgent(
+                config={
+                    "system1_entry": 20,    # 20-day breakout
+                    "system1_exit": 10,     # 10-day exit
+                    "system2_entry": 55,    # 55-day breakout
+                    "system2_exit": 20,     # 20-day exit
+                    "atr_period": 20,       # N calculation
+                    "stop_atr_mult": 2.0,   # 2N stop
+                    "max_units": 4,         # Max pyramid units
+                    "risk_per_trade": 0.01, # 1% risk per unit
+                },
+                market_data_service=self.market_data_service,
+                indicators_service=self.indicators_service,
+            ),
+        )
+
         # Stage 3: Portfolio Management (the execution gatekeeper)
         # This is the critical bridge between signals and execution
         # Dynamic confidence threshold based on portfolio state and market conditions
@@ -146,7 +217,12 @@ class StrategyEngine:
             f"WhyMe Quant AI Strategy Engine initialized\n"
             f"**Symbol:** {self.settings.default_symbol}\n"
             f"**Max Leverage:** {self.settings.max_leverage}x\n"
-            f"**LLM:** {self.settings.llm_model}",
+            f"**LLM:** {self.settings.llm_model}\n\n"
+            f"**NEW Multi-Timeframe System:**\n"
+            f"- Timeframes: 1H, 4H, 1D (real candles)\n"
+            f"- Indicators: 50+ via pandas-ta\n"
+            f"- Strategies: Turtle (20/55-day), Trend, MR\n"
+            f"- Alpha Generator: Signal aggregation",
             color=0x00FF00,
         )
 
@@ -180,6 +256,9 @@ class StrategyEngine:
         )
 
         # Stop components
+        if self.market_data_service:
+            await self.market_data_service.stop()
+
         if self.orchestrator:
             await self.orchestrator.stop()
 
@@ -190,6 +269,10 @@ class StrategyEngine:
 
         if self.weex_client:
             await self.weex_client.close()
+
+        # Close Redis client
+        if self.redis_client:
+            await self.redis_client.close()
 
         # Close Discord and LLM clients
         await self.discord.close()
