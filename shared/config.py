@@ -24,6 +24,20 @@ class Settings(BaseSettings):
     # AI Models
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    openrouter_api_key: str = ""
+    openrouter_api_url: str = "https://openrouter.ai/api/v1/chat/completions"
+    llm_model: str = "xiaomi/mimo-v2-flash:free"  # MiMo-v2-flash #1 Finance on OpenRouter
+    llm_http_referer: str = "https://whymelabs.com"
+    llm_app_name: str = "WhyMe Quant Strategy Engine"
+
+    # Discord
+    discord_webhook_url: str = ""
+    discord_bot_name: str = "WhyMe Quant Bot"
+    discord_bot_avatar: str = ""  # Optional: URL to bot avatar image
+
+    # Trading Loop
+    main_loop_interval: int = 5  # seconds between market data polls
+    error_backoff_interval: int = 10  # seconds to wait after error
 
     # Logging
     log_level: str = "INFO"

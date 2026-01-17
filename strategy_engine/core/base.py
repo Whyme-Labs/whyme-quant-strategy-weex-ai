@@ -23,8 +23,11 @@ class Signal:
     symbol: str
     size: float
     price: Optional[float] = None
+    stop_price: Optional[float] = None  # Stop loss
+    target_price: Optional[float] = None  # Take profit
     reason: str = ""
     confidence: float = 0.0
+    strategy: str = ""  # Strategy that generated this signal
     timestamp: datetime = field(default_factory=datetime.utcnow)
     metadata: Dict[str, Any] = field(default_factory=dict)
 

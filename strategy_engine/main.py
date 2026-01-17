@@ -6,6 +6,8 @@ from typing import Optional
 from loguru import logger
 
 from shared.config import get_settings
+from shared.discord import get_discord_notifier
+from shared.llm import get_llm_analyzer
 from weex_client import WeexClient
 from ai_logging import AILogUploader, get_ai_logger
 from .core.orchestrator import AgentOrchestrator
@@ -29,8 +31,11 @@ class StrategyEngine:
         self.weex_client: Optional[WeexClient] = None
         self.orchestrator: Optional[AgentOrchestrator] = None
         self.ai_uploader: Optional[AILogUploader] = None
+        self.discord = get_discord_notifier()
+        self.llm = get_llm_analyzer()
         self._running = False
         self._shutdown_event = asyncio.Event()
+        self._last_regime: dict = {}
 
     async def initialize(self):
         """Initialize all components."""
@@ -135,6 +140,16 @@ class StrategyEngine:
 
         logger.info("Strategy engine initialized successfully")
 
+        # Send startup notification to Discord
+        await self.discord.send_status(
+            "Engine Started",
+            f"WhyMe Quant AI Strategy Engine initialized\n"
+            f"**Symbol:** {self.settings.default_symbol}\n"
+            f"**Max Leverage:** {self.settings.max_leverage}x\n"
+            f"**LLM:** {self.settings.llm_model}",
+            color=0x00FF00,
+        )
+
     async def start(self):
         """Start the strategy engine."""
         if self._running:
@@ -157,6 +172,13 @@ class StrategyEngine:
         self._running = False
         self._shutdown_event.set()
 
+        # Send shutdown notification
+        await self.discord.send_status(
+            "Engine Stopped",
+            "WhyMe Quant AI Strategy Engine shutting down",
+            color=0xFF6B6B,
+        )
+
         # Stop components
         if self.orchestrator:
             await self.orchestrator.stop()
@@ -169,15 +191,23 @@ class StrategyEngine:
         if self.weex_client:
             await self.weex_client.close()
 
+        # Close Discord and LLM clients
+        await self.discord.close()
+        await self.llm.close()
+
         logger.info("Strategy engine stopped")
 
     async def _main_loop(self):
         """Main trading loop."""
         symbol = self.settings.default_symbol
         logger.info(f"Starting main loop for {symbol}")
+        iteration_count = 0
+        last_regime_log = None  # Track last logged regime to avoid spam
 
         while self._running:
             try:
+                iteration_count += 1
+
                 # Fetch market data
                 ticker = await self.weex_client.get_ticker(symbol)
 
@@ -196,28 +226,76 @@ class StrategyEngine:
                 # Process through agent orchestrator
                 signal = await self.orchestrator.process_market_data(market_data)
 
-                if signal:
-                    logger.info(f"Signal generated: {signal.action} {signal.size} {signal.symbol}")
+                # Get last regime from orchestrator
+                if self.orchestrator.last_regime:
+                    new_regime = self.orchestrator.last_regime
+                    regime_data = new_regime.get("regime", {})
+                    recommended = new_regime.get("recommended_strategy", "neutral")
 
-                    # Execute the trade
-                    await self._execute_signal(signal)
+                    # Log regime changes to Discord (not every tick)
+                    regime_key = f"{regime_data.get('volatility')}-{regime_data.get('trend')}-{recommended}"
+                    if regime_key != last_regime_log:
+                        last_regime_log = regime_key
+                        self._last_regime = regime_data
+
+                        await self.discord.send_trace(
+                            "Regime",
+                            f"Market regime detected for {symbol}",
+                            {
+                                "Price": f"${market_data['price']:,.2f}",
+                                "Volatility": regime_data.get("volatility", "unknown"),
+                                "Trend": regime_data.get("trend", "unknown"),
+                                "Volume": regime_data.get("volume", "unknown"),
+                                "Strategy": recommended,
+                                "Confidence": f"{new_regime.get('confidence', 0)*100:.0f}%",
+                            }
+                        )
+
+                if signal:
+                    logger.info(f"Trade approved by Portfolio Manager: {signal.action.value} {signal.size} {signal.symbol}")
+
+                    # Update regime from signal metadata
+                    if signal.metadata.get("regime"):
+                        self._last_regime = signal.metadata["regime"]
+
+                    # Log signal approval trace
+                    await self.discord.send_trace(
+                        "Portfolio",
+                        f"Trade APPROVED by Portfolio Manager",
+                        {
+                            "Direction": signal.action.value.upper(),
+                            "Size": f"{signal.size:.4f}",
+                            "Entry": f"${signal.price or market_data['price']:,.2f}",
+                            "TP": f"${signal.target_price:,.2f}" if signal.target_price else "Not set",
+                            "SL": f"${signal.stop_price:,.2f}" if signal.stop_price else "Not set",
+                            "Confidence": f"{signal.confidence*100:.0f}%",
+                            "Strategy": signal.strategy,
+                        }
+                    )
+
+                    # Execute the trade (Discord notification happens on success)
+                    await self._execute_signal(signal, market_data)
 
                 # Wait before next iteration
-                await asyncio.sleep(5)  # Poll every 5 seconds
+                await asyncio.sleep(self.settings.main_loop_interval)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
-                await asyncio.sleep(10)  # Back off on error
+                await self.discord.send_error(str(e), f"Main loop iteration {iteration_count}")
+                await asyncio.sleep(self.settings.error_backoff_interval)
 
-    async def _execute_signal(self, signal):
+    async def _execute_signal(self, signal, market_data: dict):
         """Execute a trading signal.
 
         Args:
             signal: Trading signal to execute
+            market_data: Current market data
         """
         try:
+            entry_price = signal.price or market_data["price"]
+
             # Place order
             result = await self.weex_client.place_order(
                 symbol=signal.symbol,
@@ -229,6 +307,56 @@ class StrategyEngine:
 
             order_id = result.get("orderId")
             logger.info(f"Order placed: {order_id}")
+
+            # Get LLM analysis for the executed trade
+            llm_analysis = await self.llm.analyze_signal(
+                symbol=signal.symbol,
+                price=entry_price,
+                direction=signal.action.value,
+                strategy=signal.strategy,
+                confidence=signal.confidence,
+                reasoning=signal.reason,
+                regime=self._last_regime,
+            )
+
+            # Calculate risk/reward if TP and SL are set
+            risk_reward = "N/A"
+            if signal.stop_price and signal.target_price and entry_price:
+                risk = abs(entry_price - signal.stop_price)
+                reward = abs(signal.target_price - entry_price)
+                if risk > 0:
+                    risk_reward = f"{reward/risk:.2f}:1"
+
+            # Send detailed execution notification to Discord
+            await self.discord.send_signal(
+                signal_type="TRADE EXECUTED",
+                symbol=signal.symbol,
+                direction=signal.action.value,
+                price=entry_price,
+                size=signal.size,
+                confidence=signal.confidence,
+                strategy=signal.strategy,
+                reasoning=signal.reason,
+                regime=self._last_regime,
+                llm_analysis=llm_analysis,
+            )
+
+            # Send detailed trade info as follow-up
+            tp_str = f"${signal.target_price:,.2f}" if signal.target_price else "Not set"
+            sl_str = f"${signal.stop_price:,.2f}" if signal.stop_price else "Not set"
+
+            await self.discord.send_status(
+                "Trade Details",
+                f"**Order ID:** `{order_id}`\n"
+                f"**Entry Price:** ${entry_price:,.2f}\n"
+                f"**Take Profit:** {tp_str}\n"
+                f"**Stop Loss:** {sl_str}\n"
+                f"**Risk/Reward:** {risk_reward}\n"
+                f"**Position Size:** {signal.size}\n"
+                f"**Confidence:** {signal.confidence*100:.0f}%\n"
+                f"**Strategy:** {signal.strategy}",
+                color=0x2ECC71 if signal.action.value == "buy" else 0xE74C3C,
+            )
 
             # Upload AI logs for this order
             if order_id:
@@ -244,6 +372,10 @@ class StrategyEngine:
 
         except Exception as e:
             logger.error(f"Failed to execute signal: {e}")
+            await self.discord.send_error(
+                str(e),
+                f"Failed to execute {signal.action.value} {signal.symbol}",
+            )
 
 
 async def main():

@@ -58,6 +58,8 @@ class ExecutionPlan:
     decision: ExecutionDecision
     original_signal: Dict[str, Any]
     adjusted_size: float
+    adjusted_stop_price: Optional[float]
+    adjusted_target_price: Optional[float]
     confidence_threshold_used: float
     signal_confidence: float
     reasoning: str
@@ -184,8 +186,10 @@ class PortfolioManagerAgent(BaseAgent):
 
         return {
             "decision": plan.decision.value,
-            "approved": plan.decision == ExecutionDecision.EXECUTE,
+            "approved": plan.decision in [ExecutionDecision.EXECUTE, ExecutionDecision.REDUCE_SIZE],
             "adjusted_size": plan.adjusted_size,
+            "adjusted_stop_price": plan.adjusted_stop_price,
+            "adjusted_target_price": plan.adjusted_target_price,
             "confidence_threshold": confidence_threshold,
             "signal_confidence": signal_confidence,
             "reasoning": plan.reasoning,
@@ -306,6 +310,13 @@ class PortfolioManagerAgent(BaseAgent):
         original_size = proposal.get("size", 0)
         adjusted_size = original_size
 
+        # Get original TP/SL
+        entry_price = proposal.get("price", 0)
+        original_stop = proposal.get("stop_price")
+        original_target = proposal.get("target_price")
+        adjusted_stop = original_stop
+        adjusted_target = original_target
+
         # Rule 1: Confidence check
         if signal_confidence < confidence_threshold:
             reasoning_parts.append(
@@ -315,6 +326,8 @@ class PortfolioManagerAgent(BaseAgent):
                 decision=ExecutionDecision.REJECT,
                 original_signal=proposal,
                 adjusted_size=0,
+                adjusted_stop_price=None,
+                adjusted_target_price=None,
                 confidence_threshold_used=confidence_threshold,
                 signal_confidence=signal_confidence,
                 reasoning=". ".join(reasoning_parts) + ". REJECTED: Insufficient confidence.",
@@ -338,6 +351,8 @@ class PortfolioManagerAgent(BaseAgent):
                     decision=ExecutionDecision.REJECT,
                     original_signal=proposal,
                     adjusted_size=0,
+                    adjusted_stop_price=None,
+                    adjusted_target_price=None,
                     confidence_threshold_used=confidence_threshold,
                     signal_confidence=signal_confidence,
                     reasoning=". ".join(reasoning_parts) + ". REJECTED: Exposure limit.",
@@ -361,6 +376,8 @@ class PortfolioManagerAgent(BaseAgent):
                 decision=ExecutionDecision.REJECT,
                 original_signal=proposal,
                 adjusted_size=0,
+                adjusted_stop_price=None,
+                adjusted_target_price=None,
                 confidence_threshold_used=confidence_threshold,
                 signal_confidence=signal_confidence,
                 reasoning=". ".join(reasoning_parts) + ". REJECTED: Drawdown limit hit.",
@@ -371,6 +388,45 @@ class PortfolioManagerAgent(BaseAgent):
         if regime.get("volatility") == "high":
             adjusted_size = adjusted_size * 0.7
             reasoning_parts.append("Reduced size by 30% due to high volatility")
+
+            # Widen stop loss in high volatility (add 20% buffer)
+            if adjusted_stop and entry_price:
+                action = proposal.get("action", "buy")
+                if action == "buy":
+                    # For long, stop is below entry
+                    stop_distance = entry_price - adjusted_stop
+                    adjusted_stop = entry_price - (stop_distance * 1.2)
+                else:
+                    # For short, stop is above entry
+                    stop_distance = adjusted_stop - entry_price
+                    adjusted_stop = entry_price + (stop_distance * 1.2)
+                reasoning_parts.append("Widened SL by 20% for high volatility")
+
+        # Rule 6: Adjust TP/SL based on confidence
+        if entry_price and signal_confidence > 0.8:
+            # High confidence - can use tighter stop and wider target
+            if adjusted_target:
+                target_distance = abs(adjusted_target - entry_price)
+                action = proposal.get("action", "buy")
+                if action == "buy":
+                    adjusted_target = entry_price + (target_distance * 1.15)
+                else:
+                    adjusted_target = entry_price - (target_distance * 1.15)
+                reasoning_parts.append("Extended TP by 15% due to high confidence")
+
+        # Rule 7: Ensure minimum risk/reward ratio of 1.5:1
+        if adjusted_stop and adjusted_target and entry_price:
+            risk = abs(entry_price - adjusted_stop)
+            reward = abs(adjusted_target - entry_price)
+            if risk > 0 and reward / risk < 1.5:
+                # Adjust target to meet minimum R:R
+                action = proposal.get("action", "buy")
+                min_reward = risk * 1.5
+                if action == "buy":
+                    adjusted_target = entry_price + min_reward
+                else:
+                    adjusted_target = entry_price - min_reward
+                reasoning_parts.append(f"Adjusted TP to maintain 1.5:1 R:R ratio")
 
         # All checks passed
         reasoning_parts.append(
@@ -389,6 +445,8 @@ class PortfolioManagerAgent(BaseAgent):
             decision=decision,
             original_signal=proposal,
             adjusted_size=adjusted_size,
+            adjusted_stop_price=adjusted_stop,
+            adjusted_target_price=adjusted_target,
             confidence_threshold_used=confidence_threshold,
             signal_confidence=signal_confidence,
             reasoning=". ".join(reasoning_parts),

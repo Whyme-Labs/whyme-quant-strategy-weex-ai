@@ -213,7 +213,7 @@ class TrendFollowingAgent(BaseAgent):
 
         # 2. EMA Crossover/Alignment
         ema_signal = self._check_ema_alignment(
-            current_price, ema_8, ema_20, ema_50, atr, lows
+            current_price, ema_8, ema_20, ema_50, atr, lows, highs
         )
         if ema_signal:
             signals.append(ema_signal)
@@ -293,6 +293,7 @@ class TrendFollowingAgent(BaseAgent):
         ema_50: float,
         atr: float,
         lows: np.ndarray,
+        highs: np.ndarray,
     ) -> Optional[TrendSignal]:
         """Check for EMA alignment signal.
 
@@ -306,6 +307,7 @@ class TrendFollowingAgent(BaseAgent):
             ema_50: 50-period EMA
             atr: Average True Range
             lows: Low prices for stop placement
+            highs: High prices for stop placement (shorts)
 
         Returns:
             TrendSignal if alignment detected
@@ -328,7 +330,7 @@ class TrendFollowingAgent(BaseAgent):
 
         # Bearish alignment
         if current_price < ema_8 < ema_20 < ema_50:
-            recent_high = np.max(lows[-5:])  # Using lows array as proxy
+            recent_high = np.max(highs[-5:])  # Use highs for short stop
             stop_price = max(recent_high, current_price + (self.atr_multiplier * atr))
 
             return TrendSignal(

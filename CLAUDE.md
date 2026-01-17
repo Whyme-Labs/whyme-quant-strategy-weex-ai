@@ -143,7 +143,38 @@ python -m strategy_engine.main
 **Kline Granularity Values:**
 `1min`, `5min`, `15min`, `30min`, `1h`, `4h`, `12h`, `1day`, `1week`
 
+## Server Deployment
+
+**Production Server:**
+- **IP Address:** `209.182.237.49`
+- **SSH Access:** `ssh root@209.182.237.49 -i ~/.ssh/ssdnodes_sg_1`
+
+**Deployment Steps:**
+```bash
+# Connect to server
+ssh root@209.182.237.49 -i ~/.ssh/ssdnodes_sg_1
+
+# Clone repository
+git clone https://github.com/Whyme-Labs/whyme-quant-strategy-weex-ai.git
+cd whyme-quant-strategy-weex-ai
+
+# Setup Python environment
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with production credentials
+
+# Run the strategy engine
+python -m strategy_engine.main
+```
+
+**WEEX UID:** `3004783944`
+
 ## References
 
 - [WEEX API Documentation](https://www.weex.com/api-doc/spot/introduction/APIBriefIntroduction)
 - [WEEX API Domain](https://www.weex.com/api-doc/spot/QuickStart/APIDomain)
+- [DoraHacks BUIDL](https://dorahacks.io/hackathon/weex-forked-entry)

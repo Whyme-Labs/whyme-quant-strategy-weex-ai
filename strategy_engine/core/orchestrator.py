@@ -111,10 +111,18 @@ class AgentOrchestrator:
                 )
                 return None
 
-            # Apply portfolio-adjusted size
+            # Apply portfolio-adjusted size and TP/SL
             if "adjusted_size" in portfolio_result:
                 context["strategy_proposal"]["size"] = portfolio_result["adjusted_size"]
                 logger.debug(f"Portfolio adjusted size: {portfolio_result['adjusted_size']}")
+
+            if portfolio_result.get("adjusted_stop_price"):
+                context["strategy_proposal"]["stop_price"] = portfolio_result["adjusted_stop_price"]
+                logger.debug(f"Portfolio adjusted SL: {portfolio_result['adjusted_stop_price']}")
+
+            if portfolio_result.get("adjusted_target_price"):
+                context["strategy_proposal"]["target_price"] = portfolio_result["adjusted_target_price"]
+                logger.debug(f"Portfolio adjusted TP: {portfolio_result['adjusted_target_price']}")
 
         # Stage 4: Risk Assessment (additional checks)
         if "risk_manager" in self.agents:
@@ -302,14 +310,18 @@ class AgentOrchestrator:
             symbol=proposal.get("symbol", "BTCUSDT"),
             size=proposal.get("size", 0),
             price=execution.get("price") or proposal.get("price"),
+            stop_price=proposal.get("stop_price"),
+            target_price=proposal.get("target_price"),
             reason=proposal.get("reason", "Multi-agent decision"),
             confidence=proposal.get("confidence", 0.5),
+            strategy=proposal.get("strategy", "unknown"),
             model_used=self._get_primary_model(),
             ai_explanation=self._build_explanation(context),
             metadata={
                 "market_analysis": context.get("market_analysis"),
                 "risk_assessment": context.get("risk_assessment"),
                 "execution_plan": context.get("execution_plan"),
+                "regime": context.get("regime", {}),
             },
         )
 
