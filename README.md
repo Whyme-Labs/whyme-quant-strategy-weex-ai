@@ -53,6 +53,94 @@ Our system features a **Self-Evolving Agentic RL Architecture** that learns from
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Statistical Edge Collection System
+
+Based on the insight: *"Quantification is not about predicting future prices, but systematically collecting probability advantages in local market inefficiencies."*
+
+### Core Principles
+
+1. **Every signal is an "edge"** with measurable statistical properties
+2. **Position size based on edge magnitude** using Kelly Criterion
+3. **Law of Large Numbers** - high frequency dilutes single-trade noise
+4. **Diversification** across symbols, timeframes, and edge types
+5. **Track convergence** to expected value
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                   Statistical Edge Collection System                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                        Edge Registry (Redis)                          │   │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │   │
+│  │  │  edge:mr_rsi_ob │  │ edge:tf_breakout│  │  edge:turtle_s1     │  │   │
+│  │  │  win_rate: 0.52 │  │ win_rate: 0.38  │  │  win_rate: 0.35     │  │   │
+│  │  │  payoff: 1.8:1  │  │ payoff: 3.2:1   │  │  payoff: 4.5:1      │  │   │
+│  │  │  edge: +0.12    │  │ edge: +0.22     │  │  edge: +0.18        │  │   │
+│  │  │  kelly: 6.7%    │  │ kelly: 6.9%     │  │  kelly: 4.0%        │  │   │
+│  │  └─────────────────┘  └─────────────────┘  └─────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                         │
+│  ┌─────────────────────────────────┼─────────────────────────────────────┐  │
+│  │                    Edge-Based Trading Pipeline                         │  │
+│  │                                                                        │  │
+│  │   Market Data → Edge Scanner → Kelly Sizer → Diversifier → Executor   │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                    Performance Attribution                            │   │
+│  │                                                                        │   │
+│  │   Track: actual_pnl vs expected_pnl → convergence to edge             │   │
+│  │   Alert: when rolling performance < 50% of expected                   │   │
+│  │   Auto-disable: edges with negative rolling expectancy                │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Edge Services
+
+| Service | Purpose | Key Features |
+|---------|---------|--------------|
+| **EdgeRegistry** | Stores and tracks all edges | Win rate, payoff ratio, expectancy, Kelly |
+| **KellySizer** | Position sizing | 25% fractional Kelly, volatility adjustment |
+| **EdgeScanner** | Scans for edge signals | Multi-symbol, multi-timeframe scanning |
+| **PerformanceTracker** | Attribution & convergence | Expected vs actual P&L tracking |
+
+### Kelly Criterion Sizing
+
+```python
+# Edge formula (expectancy per trade)
+expectancy = (win_rate × avg_win) - (loss_rate × avg_loss)
+
+# Kelly Criterion (optimal fraction)
+kelly = (win_rate × payoff - loss_rate) / payoff
+
+# Fractional Kelly (25% for safety)
+position_size = kelly × 0.25
+```
+
+### Multi-Symbol Support
+
+| Symbol | Max Position | Correlation Group |
+|--------|-------------|-------------------|
+| BTCUSDT | 15% | btc |
+| ETHUSDT | 10% | eth |
+
+### Predefined Edges
+
+| Edge ID | Type | Timeframe | Entry Conditions |
+|---------|------|-----------|------------------|
+| `mr_rsi_oversold_btc_4h` | Mean Reversion | 4H | RSI < 30, Below BB Lower |
+| `mr_rsi_overbought_btc_4h` | Mean Reversion | 4H | RSI > 70, Above BB Upper |
+| `tf_channel_breakout_btc_1d` | Trend Following | 1D | 20-day channel breakout |
+| `tf_vcp_btc_4h` | Trend Following | 4H | VCP pattern + ATR contraction |
+| `turtle_s1_btc_1d` | Turtle | 1D | 20-day breakout (System 1) |
+| `turtle_s2_btc_1d` | Turtle | 1D | 55-day breakout (System 2) |
+
+---
+
 ## Strategy: Regime-Based Multi-Agent Trading
 
 This strategy uses specialized AI agents that collaborate based on detected market regimes:
@@ -220,19 +308,27 @@ whyme-quant-strategy-weex-ai/
 ├── docs/                      # Documentation
 │   └── STRATEGY_RESEARCH.md  # Research insights & strategy rationale
 ├── strategy_engine/           # Trading Engine
-│   ├── main.py               # Entry point
+│   ├── main.py               # Entry point (edge-based or regime-based)
 │   ├── core/                 # Core abstractions
 │   │   ├── base.py          # Signal & SignalAction classes
 │   │   └── orchestrator.py  # Regime-based agent orchestrator
-│   ├── models/              # Data Models (Self-Evolving RL)
-│   │   └── memory.py         # TradeRecord, StrategyInsight, ParameterState
+│   ├── config/              # Configuration (Edge Collection System)
+│   │   ├── symbols.py        # Multi-symbol trading configuration
+│   │   └── edges.py          # Predefined edge definitions
+│   ├── models/              # Data Models
+│   │   ├── memory.py         # TradeRecord, StrategyInsight, ParameterState
+│   │   └── edge.py           # Edge, EdgeSignal, PositionSize (Edge Collection)
 │   ├── services/            # Shared Services Layer
 │   │   ├── redis_client.py   # Redis cache persistence
 │   │   ├── market_data_service.py # Multi-timeframe OHLCV with caching
 │   │   ├── indicators_service.py  # Technical indicator calculations
 │   │   ├── pattern_detector.py    # Chart pattern detection
 │   │   ├── alpha_generator.py     # Signal aggregation & scoring
-│   │   └── trade_memory.py        # Triple Memory System (Episodic/Semantic/Procedural)
+│   │   ├── trade_memory.py        # Triple Memory System (Episodic/Semantic/Procedural)
+│   │   ├── edge_registry.py       # Edge storage & statistics (Edge Collection)
+│   │   ├── kelly_sizer.py         # Kelly-based position sizing (Edge Collection)
+│   │   ├── edge_scanner.py        # Edge signal scanning (Edge Collection)
+│   │   └── performance_tracker.py # Attribution & convergence (Edge Collection)
 │   ├── agents/              # AI Agents (Multi-Agent System)
 │   │   ├── base_agent.py     # Base agent class
 │   │   ├── regime_detector.py # Market regime classification

@@ -2,9 +2,7 @@
 
 import asyncio
 import signal
-import uuid
-from datetime import datetime
-from typing import Dict, Optional
+from typing import Optional
 from loguru import logger
 
 from shared.config import get_settings
@@ -20,11 +18,16 @@ from .services import (
     PatternDetector,
     AlphaGenerator,
     TradeMemoryService,
+    # Statistical Edge Collection System
+    EdgeRegistry,
+    KellySizer,
+    EdgeScanner,
+    PerformanceTracker,
 )
 from .agents import (
     MarketAnalystAgent,
     RiskManagerAgent,
-    ExecutionAgent,
+    ExecutorAgent,
     RegimeDetectorAgent,
     MeanReversionAgent,
     TrendFollowingAgent,
@@ -35,7 +38,10 @@ from .agents import (
     JudgeAgent,
     LearnerAgent,
 )
-from .models.memory import TradeRecord, TradeStatus, ExitReason
+from .models.memory import TradeStatus, ExitReason
+from .models.edge import EdgeTradeAttribution
+from .config.symbols import get_enabled_symbols, get_symbol_config, CORRELATION_LIMITS
+from .config.edges import PREDEFINED_EDGES
 from .loops import (
     PositionReviewLoop,
     TradeOutcomeLoop,
@@ -73,16 +79,23 @@ class StrategyEngine:
         self.judge_agent: Optional[JudgeAgent] = None
         self.learner_agent: Optional[LearnerAgent] = None
 
+        # Executor Agent - SINGLE POINT OF EXECUTION
+        self.executor_agent: Optional[ExecutorAgent] = None
+
         # Learning loops
         self.position_review_loop: Optional[PositionReviewLoop] = None
         self.trade_outcome_loop: Optional[TradeOutcomeLoop] = None
         self.consolidation_loop: Optional[ConsolidationLoop] = None
 
-        # Track order_id -> trade_id mapping for exit tracking
-        self._order_to_trade: Dict[str, str] = {}
-
         # Position monitoring task
         self._position_monitor_task: Optional[asyncio.Task] = None
+
+        # Statistical Edge Collection System
+        self.edge_registry: Optional[EdgeRegistry] = None
+        self.kelly_sizer: Optional[KellySizer] = None
+        self.edge_scanner: Optional[EdgeScanner] = None
+        self.performance_tracker: Optional[PerformanceTracker] = None
+        self._edge_mode_enabled: bool = True  # Enable edge-based trading
 
     async def initialize(self):
         """Initialize all components."""
@@ -140,6 +153,9 @@ class StrategyEngine:
         await self.trade_memory.initialize()
         logger.info("Trade Memory Service initialized (Episodic + Semantic + Procedural)")
 
+        # Initialize Statistical Edge Collection System
+        await self._initialize_edge_system()
+
         # Initialize Self-Evolving RL Agents
         self.reflection_agent = ReflectionAgent(
             config={
@@ -173,11 +189,26 @@ class StrategyEngine:
         )
         logger.info("Self-evolving RL agents initialized (Reflection, Judge, Learner)")
 
+        # Initialize Executor Agent - SINGLE POINT OF EXECUTION
+        # This is the ONLY component that can execute trades
+        self.executor_agent = ExecutorAgent(
+            config={
+                "slippage_tolerance": 0.001,
+                "prefer_limit_orders": True,
+            },
+            weex_client=self.weex_client,
+            trade_memory=self.trade_memory,
+            discord=self.discord,
+            llm_analyzer=self.llm,
+        )
+        logger.info("Executor Agent initialized (single point of execution)")
+
         # Initialize Learning Loops
         self.position_review_loop = PositionReviewLoop(
             weex_client=self.weex_client,
             reflection_agent=self.reflection_agent,
             trade_memory=self.trade_memory,
+            executor_agent=self.executor_agent,  # Single point of execution
             regime_detector=None,  # Will be set after orchestrator init
             discord=self.discord,
             interval_seconds=3600,  # 1 hour
@@ -292,11 +323,8 @@ class StrategyEngine:
             }),
         )
 
-        # Stage 4: Execution
-        self.orchestrator.register_agent(
-            "execution_agent",
-            ExecutionAgent(config={}),
-        )
+        # Note: ExecutorAgent is NOT registered with orchestrator
+        # It's called directly by _execute_signal() as the single point of execution
 
         # Legacy: Keep market analyst for fallback
         self.orchestrator.register_agent(
@@ -306,6 +334,9 @@ class StrategyEngine:
 
         logger.info("Strategy engine initialized successfully")
 
+        # Get edge registry summary for startup message
+        edge_summary = await self.edge_registry.get_registry_summary() if self.edge_registry else {}
+
         # Send startup notification to Discord
         await self.discord.send_status(
             "Engine Started",
@@ -313,6 +344,12 @@ class StrategyEngine:
             f"**Symbol:** {self.settings.default_symbol}\n"
             f"**Max Leverage:** {self.settings.max_leverage}x\n"
             f"**LLM:** {self.settings.llm_model}\n\n"
+            f"**Statistical Edge Collection System:**\n"
+            f"- Mode: {'Edge-Based' if self._edge_mode_enabled else 'Regime-Based'}\n"
+            f"- Registered Edges: {edge_summary.get('total_edges', 0)}\n"
+            f"- Active Edges: {edge_summary.get('active_edges', 0)}\n"
+            f"- Warming Edges: {edge_summary.get('warming_edges', 0)}\n"
+            f"- Kelly Fraction: 25% (conservative)\n\n"
             f"**Multi-Timeframe System:**\n"
             f"- Timeframes: 1H, 4H, 1D (real candles)\n"
             f"- Strategies: Turtle (20/55-day), Trend, MR\n\n"
@@ -407,9 +444,18 @@ class StrategyEngine:
         logger.info("Strategy engine stopped")
 
     async def _main_loop(self):
-        """Main trading loop."""
+        """Main trading loop.
+
+        Routes to edge-based or regime-based loop based on configuration.
+        """
+        # Use edge-based loop if enabled and initialized
+        if self._edge_mode_enabled and self.edge_scanner:
+            await self._edge_based_main_loop()
+            return
+
+        # Fallback to regime-based loop
         symbol = self.settings.default_symbol
-        logger.info(f"Starting main loop for {symbol}")
+        logger.info(f"Starting regime-based main loop for {symbol}")
         iteration_count = 0
         last_regime_log = None  # Track last logged regime to avoid spam
 
@@ -496,115 +542,40 @@ class StrategyEngine:
                 await asyncio.sleep(self.settings.error_backoff_interval)
 
     async def _execute_signal(self, signal, market_data: dict):
-        """Execute a trading signal.
+        """Execute a trading signal via ExecutorAgent.
 
         Args:
             signal: Trading signal to execute
             market_data: Current market data
         """
         try:
-            entry_price = signal.price or market_data["price"]
-
-            # Place order
-            result = await self.weex_client.place_order(
-                symbol=signal.symbol,
-                side=signal.action.value,
-                order_type="limit" if signal.price else "market",
-                size=str(signal.size),
-                price=str(signal.price) if signal.price else None,
+            # Execute via ExecutorAgent (single point of execution)
+            # All Discord logging, trade recording, and LLM analysis
+            # is handled internally by the ExecutorAgent
+            result = await self.executor_agent.execute_open(
+                signal=signal,
+                market_data=market_data,
+                regime=self._last_regime.copy() if self._last_regime else {},
             )
 
-            order_id = result.get("orderId")
-            logger.info(f"Order placed: {order_id}")
+            if result and result.get("success"):
+                order_id = result.get("order_id")
+                trade_id = result.get("trade_id")
+                logger.info(f"Trade executed via ExecutorAgent: order={order_id}, trade={trade_id}")
 
-            # Record trade entry in episodic memory (Self-Evolving RL)
-            trade_id = str(uuid.uuid4())
-            trade_record = TradeRecord(
-                trade_id=trade_id,
-                symbol=signal.symbol,
-                entry_timestamp=datetime.now(),
-                entry_price=entry_price,
-                entry_side="long" if signal.action.value == "buy" else "short",
-                entry_size=signal.size,
-                entry_strategy=signal.strategy,
-                entry_regime=self._last_regime.copy() if self._last_regime else {},
-                entry_confidence=signal.confidence,
-                entry_reasoning=signal.reason or "",
-                market_data_at_entry=market_data.copy(),
-                agent_decisions=[],  # Could collect from orchestrator
-                entry_order_id=str(order_id) if order_id else None,
-                status=TradeStatus.OPEN,
-            )
+                # Upload AI logs for this order
+                if order_id:
+                    ai_logger = get_ai_logger()
+                    # Update pending decisions with order_id
+                    pending = await ai_logger.get_pending_uploads()
+                    for decision in pending:
+                        if decision.order_id is None:
+                            decision.order_id = int(order_id)
 
-            await self.trade_memory.record_trade_entry(trade_record)
-
-            # Store mapping for exit tracking
-            if order_id:
-                self._order_to_trade[str(order_id)] = trade_id
-
-            logger.info(f"Trade recorded in episodic memory: {trade_id}")
-
-            # Get LLM analysis for the executed trade
-            llm_analysis = await self.llm.analyze_signal(
-                symbol=signal.symbol,
-                price=entry_price,
-                direction=signal.action.value,
-                strategy=signal.strategy,
-                confidence=signal.confidence,
-                reasoning=signal.reason,
-                regime=self._last_regime,
-            )
-
-            # Calculate risk/reward if TP and SL are set
-            risk_reward = "N/A"
-            if signal.stop_price and signal.target_price and entry_price:
-                risk = abs(entry_price - signal.stop_price)
-                reward = abs(signal.target_price - entry_price)
-                if risk > 0:
-                    risk_reward = f"{reward/risk:.2f}:1"
-
-            # Send detailed execution notification to Discord
-            await self.discord.send_signal(
-                signal_type="TRADE EXECUTED",
-                symbol=signal.symbol,
-                direction=signal.action.value,
-                price=entry_price,
-                size=signal.size,
-                confidence=signal.confidence,
-                strategy=signal.strategy,
-                reasoning=signal.reason,
-                regime=self._last_regime,
-                llm_analysis=llm_analysis,
-            )
-
-            # Send detailed trade info as follow-up
-            tp_str = f"${signal.target_price:,.2f}" if signal.target_price else "Not set"
-            sl_str = f"${signal.stop_price:,.2f}" if signal.stop_price else "Not set"
-
-            await self.discord.send_status(
-                "Trade Details",
-                f"**Order ID:** `{order_id}`\n"
-                f"**Entry Price:** ${entry_price:,.2f}\n"
-                f"**Take Profit:** {tp_str}\n"
-                f"**Stop Loss:** {sl_str}\n"
-                f"**Risk/Reward:** {risk_reward}\n"
-                f"**Position Size:** {signal.size}\n"
-                f"**Confidence:** {signal.confidence*100:.0f}%\n"
-                f"**Strategy:** {signal.strategy}",
-                color=0x2ECC71 if signal.action.value == "buy" else 0xE74C3C,
-            )
-
-            # Upload AI logs for this order
-            if order_id:
-                ai_logger = get_ai_logger()
-                # Update pending decisions with order_id
-                pending = await ai_logger.get_pending_uploads()
-                for decision in pending:
-                    if decision.order_id is None:
-                        decision.order_id = int(order_id)
-
-                # Upload immediately
-                await self.ai_uploader.upload_for_order(int(order_id))
+                    # Upload immediately
+                    await self.ai_uploader.upload_for_order(int(order_id))
+            else:
+                logger.warning("ExecutorAgent failed to execute signal")
 
         except Exception as e:
             logger.error(f"Failed to execute signal: {e}")
@@ -617,6 +588,7 @@ class StrategyEngine:
         """Monitor positions to detect trade closes.
 
         Only actively monitors when there are open positions to track.
+        Uses ExecutorAgent's order_to_trade mapping for tracking.
         When detected, calls trade_outcome_loop.on_trade_closed().
         """
         logger.info("Position monitor started")
@@ -624,8 +596,11 @@ class StrategyEngine:
 
         while self._running:
             try:
+                # Get order tracking from ExecutorAgent
+                order_to_trade = self.executor_agent.get_order_to_trade_mapping()
+
                 # Only check frequently when there are trades to monitor
-                if not self._order_to_trade:
+                if not order_to_trade:
                     await asyncio.sleep(300)  # Sleep 5 minutes when no positions
                     continue
 
@@ -652,17 +627,17 @@ class StrategyEngine:
 
                 # Check each tracked trade
                 closed_trades = []
-                for order_id, trade_id in list(self._order_to_trade.items()):
+                for order_id, trade_id in list(order_to_trade.items()):
                     # Get the trade record to check its status
                     trade = await self.trade_memory.get_trade(trade_id)
                     if not trade:
                         # Trade not found, remove from tracking
-                        del self._order_to_trade[order_id]
+                        self.executor_agent.remove_order_mapping(order_id)
                         continue
 
                     if trade.status != TradeStatus.OPEN:
                         # Already processed, remove from tracking
-                        del self._order_to_trade[order_id]
+                        self.executor_agent.remove_order_mapping(order_id)
                         continue
 
                     # Check if this position is still open
@@ -707,17 +682,10 @@ class StrategyEngine:
                         exit_regime=current_regime,
                     )
 
-                    # Remove from tracking
-                    del self._order_to_trade[order_id]
+                    # Remove from tracking via ExecutorAgent
+                    self.executor_agent.remove_order_mapping(order_id)
 
-                    # Notify Discord
-                    await self.discord.send_status(
-                        "Position Closed Detected",
-                        f"Trade `{trade_id}` has been closed.\n"
-                        f"Exit reason: {exit_reason.value}\n"
-                        f"Trade outcome loop triggered.",
-                        color=0x3498DB,
-                    )
+                    # Note: Discord notification is handled by TradeOutcomeLoop
 
             except asyncio.CancelledError:
                 break
@@ -727,6 +695,295 @@ class StrategyEngine:
                 await asyncio.sleep(30)
 
         logger.info("Position monitor stopped")
+
+    # =========================================================================
+    # STATISTICAL EDGE COLLECTION SYSTEM
+    # =========================================================================
+
+    async def _initialize_edge_system(self):
+        """Initialize the Statistical Edge Collection System."""
+        logger.info("Initializing Statistical Edge Collection System...")
+
+        # Initialize Edge Registry
+        self.edge_registry = EdgeRegistry(redis_client=self.redis_client)
+        await self.edge_registry.initialize()
+
+        # Register predefined edges
+        for edge in PREDEFINED_EDGES:
+            await self.edge_registry.register_edge(edge)
+
+        logger.info(f"Registered {len(PREDEFINED_EDGES)} predefined edges")
+
+        # Initialize Kelly Sizer
+        self.kelly_sizer = KellySizer(
+            kelly_fraction=0.25,  # Use 25% of full Kelly (conservative)
+            max_position_pct=0.10,  # Max 10% per trade
+            min_position_pct=0.01,  # Min 1% to be worth trading
+            max_total_exposure=CORRELATION_LIMITS.get("total", 0.50),
+        )
+        logger.info("Kelly Sizer initialized (25% fractional Kelly)")
+
+        # Initialize Edge Scanner
+        self.edge_scanner = EdgeScanner(
+            edge_registry=self.edge_registry,
+            market_data=self.market_data_service,
+            indicators=self.indicators_service,
+        )
+        logger.info("Edge Scanner initialized")
+
+        # Initialize Performance Tracker
+        self.performance_tracker = PerformanceTracker(
+            edge_registry=self.edge_registry,
+            redis_client=self.redis_client,
+            discord=self.discord,
+        )
+        logger.info("Performance Tracker initialized")
+
+        # Get registry summary
+        summary = await self.edge_registry.get_registry_summary()
+        logger.info(
+            f"Edge Collection System ready: "
+            f"{summary['total_edges']} edges, "
+            f"{summary['active_edges']} active, "
+            f"{summary['warming_edges']} warming"
+        )
+
+    async def _edge_based_main_loop(self):
+        """Edge-based main trading loop.
+
+        Implements the Statistical Edge Collection philosophy:
+        "Systematically collecting probability advantages in local market inefficiencies."
+        """
+        logger.info("Starting edge-based main loop")
+        iteration_count = 0
+
+        # Get enabled symbols
+        enabled_symbols = get_enabled_symbols()
+        symbol_list = [s.symbol for s in enabled_symbols]
+        logger.info(f"Trading symbols: {symbol_list}")
+
+        while self._running:
+            try:
+                iteration_count += 1
+
+                # 1. Scan all edges across all symbols
+                edge_signals = await self.edge_scanner.scan_all_edges()
+
+                if not edge_signals:
+                    await asyncio.sleep(self.settings.main_loop_interval)
+                    continue
+
+                logger.info(f"Edge scan found {len(edge_signals)} signal(s)")
+
+                # 2. Get current account equity
+                account_equity = await self._get_account_equity()
+                if account_equity <= 0:
+                    logger.warning("Could not get account equity")
+                    await asyncio.sleep(self.settings.main_loop_interval)
+                    continue
+
+                # 3. Get current prices and volatilities for all symbols
+                prices = {}
+                volatilities = {}
+                for symbol in symbol_list:
+                    try:
+                        ticker = await self.weex_client.get_ticker(symbol)
+                        prices[symbol] = float(ticker.get("last", 0))
+
+                        # Get ATR for volatility
+                        indicators = await self.indicators_service.calculate_indicators(
+                            symbol, "1d"
+                        )
+                        if indicators and "atr" in indicators:
+                            atr_pct = indicators["atr"] / prices[symbol] if prices[symbol] > 0 else 0.03
+                            volatilities[symbol] = atr_pct
+                    except Exception as e:
+                        logger.warning(f"Could not get data for {symbol}: {e}")
+
+                # 4. Calculate position sizes for all signals
+                position_sizes = {}
+                current_exposure = 0.0
+
+                for signal in edge_signals:
+                    # Check edge health
+                    health = await self.edge_registry.check_edge_health(signal.edge_id)
+                    if health and health.should_pause:
+                        logger.debug(f"Skipping edge {signal.edge_id}: {health.status_reason}")
+                        continue
+
+                    # Calculate Kelly-based position size
+                    price = prices.get(signal.symbol, signal.price)
+                    vol = volatilities.get(signal.symbol, 0.03)
+
+                    vol_adj = self.kelly_sizer.get_volatility_adjustment(vol)
+
+                    position = self.kelly_sizer.calculate_position_size(
+                        edge=signal.edge,
+                        account_equity=account_equity,
+                        current_price=price,
+                        volatility_adjustment=vol_adj,
+                        current_exposure=current_exposure,
+                    )
+
+                    if position.can_trade:
+                        position_sizes[signal.signal_id] = {
+                            "signal": signal,
+                            "position": position,
+                            "price": price,
+                        }
+                        current_exposure += position.position_pct
+
+                # 5. Execute trades for signals with valid position sizes
+                for signal_id, data in position_sizes.items():
+                    signal = data["signal"]
+                    position = data["position"]
+                    price = data["price"]
+
+                    # Convert EdgeSignal to a format ExecutorAgent can use
+                    await self._execute_edge_signal(signal, position, price)
+
+                # 6. Log edge scan summary
+                if position_sizes:
+                    logger.info(
+                        f"Executed {len(position_sizes)} edge signal(s), "
+                        f"total exposure: {current_exposure:.1%}"
+                    )
+
+                # Wait before next iteration
+                await asyncio.sleep(self.settings.main_loop_interval)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in edge-based main loop: {e}")
+                await self.discord.send_error(str(e), f"Edge loop iteration {iteration_count}")
+                await asyncio.sleep(self.settings.error_backoff_interval)
+
+    async def _execute_edge_signal(self, signal, position, current_price: float):
+        """Execute an edge signal via ExecutorAgent.
+
+        Args:
+            signal: EdgeSignal object
+            position: PositionSize object
+            current_price: Current price
+        """
+        try:
+            # Build market data dict
+            market_data = {
+                "symbol": signal.symbol,
+                "price": current_price,
+                "bid": signal.market_data.get("bid", current_price * 0.9999),
+                "ask": signal.market_data.get("ask", current_price * 1.0001),
+                "volume": signal.market_data.get("volume", 0),
+            }
+
+            # Create a Signal-like object for ExecutorAgent
+            from .core.base import Signal, SignalAction
+
+            action = SignalAction.BUY if signal.side == "long" else SignalAction.SELL
+
+            legacy_signal = Signal(
+                action=action,
+                symbol=signal.symbol,
+                price=signal.suggested_entry,
+                stop_price=signal.suggested_stop,
+                target_price=signal.suggested_take_profit,
+                size=position.size,
+                confidence=signal.edge.expectancy if signal.edge else 0.5,
+                strategy=f"edge:{signal.edge_id}",
+                reasoning=f"Edge signal: {signal.edge.name if signal.edge else signal.edge_id}",
+                metadata={
+                    "edge_id": signal.edge_id,
+                    "kelly_raw": position.kelly_raw,
+                    "kelly_fractional": position.kelly_fractional,
+                    "edge_expectancy": position.edge_expectancy,
+                    "edge_win_rate": position.edge_win_rate,
+                    "position_pct": position.position_pct,
+                },
+            )
+
+            # Execute via ExecutorAgent
+            result = await self.executor_agent.execute_open(
+                signal=legacy_signal,
+                market_data=market_data,
+                regime=self._last_regime.copy() if self._last_regime else {},
+            )
+
+            if result and result.get("success"):
+                trade_id = result.get("trade_id")
+                order_id = result.get("order_id")
+
+                # Record attribution for performance tracking
+                await self.performance_tracker.record_entry(
+                    edge_id=signal.edge_id,
+                    trade_id=trade_id,
+                    position_size=position.size,
+                    entry_price=current_price,
+                    kelly_used=position.kelly_fractional,
+                )
+
+                logger.info(
+                    f"Edge signal executed: {signal.edge_id} "
+                    f"(trade={trade_id}, size={position.size:.4f}, "
+                    f"kelly={position.kelly_fractional:.2%})"
+                )
+
+                # Upload AI logs
+                if order_id:
+                    ai_logger = get_ai_logger()
+                    pending = await ai_logger.get_pending_uploads()
+                    for decision in pending:
+                        if decision.order_id is None:
+                            decision.order_id = int(order_id)
+                    await self.ai_uploader.upload_for_order(int(order_id))
+            else:
+                logger.warning(f"Failed to execute edge signal {signal.edge_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to execute edge signal: {e}")
+            await self.discord.send_error(
+                str(e),
+                f"Failed to execute edge {signal.edge_id}",
+            )
+
+    async def _get_account_equity(self) -> float:
+        """Get current account equity.
+
+        Returns:
+            Account equity in USD
+        """
+        try:
+            account = await self.weex_client.get_account()
+            if isinstance(account, dict):
+                # Try different field names
+                equity = account.get("equity") or account.get("totalEquity") or account.get("available")
+                if equity:
+                    return float(equity)
+            return 0.0
+        except Exception as e:
+            logger.error(f"Failed to get account equity: {e}")
+            return 0.0
+
+    async def _run_edge_health_check(self):
+        """Run periodic edge health check."""
+        try:
+            health_reports = await self.performance_tracker.check_all_edge_health()
+
+            # Log summary
+            healthy = sum(1 for h in health_reports if h.status.value == "healthy")
+            degrading = sum(1 for h in health_reports if h.status.value == "degrading")
+            broken = sum(1 for h in health_reports if h.status.value == "broken")
+
+            if degrading > 0 or broken > 0:
+                logger.warning(
+                    f"Edge health check: {healthy} healthy, "
+                    f"{degrading} degrading, {broken} broken"
+                )
+            else:
+                logger.info(f"Edge health check: {healthy} healthy edges")
+
+        except Exception as e:
+            logger.error(f"Edge health check failed: {e}")
 
 
 async def main():

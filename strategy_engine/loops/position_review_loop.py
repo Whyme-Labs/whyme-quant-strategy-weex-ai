@@ -1,11 +1,12 @@
 """Position Review Loop.
 
 Reviews open positions every hour (configurable) using the ReflectionAgent.
-Executes suggested actions like closing positions, adjusting stops, etc.
+Delegates execution of actions to the ExecutorAgent (single point of execution).
 
 Integrates with:
-- WeexClient: Fetch positions, execute orders
+- WeexClient: Fetch positions
 - ReflectionAgent: Review positions
+- ExecutorAgent: Execute close/reduce/add orders (single point of execution)
 - TradeMemoryService: Get trade records
 - DiscordNotifier: Send notifications
 """
@@ -15,7 +16,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from loguru import logger
 
-from ..models.memory import PositionAction, PositionReview, TradeRecord
+from ..models.memory import PositionAction, PositionReview, TradeRecord, ExitReason
 from ..services.trade_memory import TradeMemoryService
 from ..agents.reflection_agent import ReflectionAgent
 
@@ -23,8 +24,12 @@ from ..agents.reflection_agent import ReflectionAgent
 class PositionReviewLoop:
     """Async loop that reviews open positions periodically.
 
-    Runs the ReflectionAgent on all open positions and executes
-    suggested actions like closing positions or adjusting stops.
+    Runs the ReflectionAgent on all open positions and delegates
+    execution of suggested actions to the ExecutorAgent.
+
+    Architecture:
+    - ReflectionAgent: Read-only analyst that reviews positions
+    - ExecutorAgent: Single point of execution for all trades
     """
 
     def __init__(
@@ -32,6 +37,7 @@ class PositionReviewLoop:
         weex_client,
         reflection_agent: ReflectionAgent,
         trade_memory: TradeMemoryService,
+        executor_agent=None,
         regime_detector=None,
         discord=None,
         interval_seconds: int = 3600,  # 1 hour default
@@ -40,9 +46,10 @@ class PositionReviewLoop:
         """Initialize Position Review Loop.
 
         Args:
-            weex_client: WEEX API client
+            weex_client: WEEX API client (for fetching positions)
             reflection_agent: ReflectionAgent for position review
             trade_memory: TradeMemoryService for trade records
+            executor_agent: ExecutorAgent for executing trades (single point of execution)
             regime_detector: Optional regime detector agent
             discord: Optional Discord notifier
             interval_seconds: Review interval in seconds
@@ -51,6 +58,7 @@ class PositionReviewLoop:
         self.weex_client = weex_client
         self.reflection_agent = reflection_agent
         self.trade_memory = trade_memory
+        self.executor_agent = executor_agent
         self.regime_detector = regime_detector
         self.discord = discord
         self.interval_seconds = interval_seconds
@@ -283,7 +291,7 @@ class PositionReviewLoop:
         review: PositionReview,
         positions: List[Dict[str, Any]],
     ):
-        """Close a position.
+        """Close a position via ExecutorAgent.
 
         Args:
             review: Position review
@@ -299,46 +307,32 @@ class PositionReviewLoop:
             logger.warning(f"Position not found for {review.symbol}")
             return
 
-        # Determine close side (opposite of hold side)
-        hold_side = position.get("holdSide", "long")
-        close_side = "sell" if hold_side == "long" else "buy"
         size = float(position.get("total", 0))
-
         if size <= 0:
             return
 
-        # Place market close order
-        try:
-            result = await self.weex_client.place_order(
-                symbol=review.symbol,
-                side=close_side,
-                order_type="market",
-                size=str(size),
-                reduce_only=True,
-            )
-
-            logger.info(
-                f"Closed position {review.symbol}: {result.get('orderId')} - {review.reason}"
-            )
-
-            # Record exit in trade memory
-            from ..models.memory import ExitReason
-            await self.trade_memory.record_trade_exit(
+        # Delegate to ExecutorAgent (single point of execution)
+        if self.executor_agent:
+            result = await self.executor_agent.execute_close(
                 trade_id=review.trade_id,
+                position=position,
+                reason=ExitReason.REFLECTION,
+                regime=review.current_regime,
                 exit_price=review.suggested_exit_price or float(position.get("markPrice", 0)),
-                exit_reason=ExitReason.REFLECTION,
-                exit_regime=review.current_regime,
             )
-
-        except Exception as e:
-            logger.error(f"Failed to close position: {e}")
+            if result and result.get("success"):
+                logger.info(f"Position {review.symbol} closed via ExecutorAgent - {review.reason}")
+            else:
+                logger.error(f"ExecutorAgent failed to close position {review.symbol}")
+        else:
+            logger.error("No ExecutorAgent available - cannot close position")
 
     async def _reduce_position(
         self,
         review: PositionReview,
         positions: List[Dict[str, Any]],
     ):
-        """Reduce a position.
+        """Reduce a position via ExecutorAgent.
 
         Args:
             review: Position review
@@ -352,39 +346,34 @@ class PositionReviewLoop:
         if not position:
             return
 
-        hold_side = position.get("holdSide", "long")
-        close_side = "sell" if hold_side == "long" else "buy"
         current_size = float(position.get("total", 0))
-
-        # Calculate reduce size (default 50% if not specified)
-        reduce_pct = abs(review.suggested_size_change or 0.5)
-        reduce_size = current_size * reduce_pct
-
-        if reduce_size <= 0:
+        if current_size <= 0:
             return
 
-        try:
-            result = await self.weex_client.place_order(
-                symbol=review.symbol,
-                side=close_side,
-                order_type="market",
-                size=str(reduce_size),
-                reduce_only=True,
-            )
+        # Calculate reduce percentage (default 50% if not specified)
+        reduce_pct = abs(review.suggested_size_change or 0.5)
 
-            logger.info(
-                f"Reduced position {review.symbol} by {reduce_pct*100:.0f}%: {result.get('orderId')}"
+        # Delegate to ExecutorAgent (single point of execution)
+        if self.executor_agent:
+            result = await self.executor_agent.execute_reduce(
+                trade_id=review.trade_id,
+                position=position,
+                reduce_pct=reduce_pct,
+                reason=review.reason,
             )
-
-        except Exception as e:
-            logger.error(f"Failed to reduce position: {e}")
+            if result and result.get("success"):
+                logger.info(f"Position {review.symbol} reduced by {reduce_pct*100:.0f}% via ExecutorAgent")
+            else:
+                logger.error(f"ExecutorAgent failed to reduce position {review.symbol}")
+        else:
+            logger.error("No ExecutorAgent available - cannot reduce position")
 
     async def _add_to_position(
         self,
         review: PositionReview,
         positions: List[Dict[str, Any]],
     ):
-        """Add to an existing position (pyramid).
+        """Add to an existing position (pyramid) via ExecutorAgent.
 
         Args:
             review: Position review
@@ -398,31 +387,27 @@ class PositionReviewLoop:
         if not position:
             return
 
-        hold_side = position.get("holdSide", "long")
-        add_side = "buy" if hold_side == "long" else "sell"
         current_size = float(position.get("total", 0))
-
-        # Calculate add size (default 50% of current position)
-        add_pct = abs(review.suggested_size_change or 0.5)
-        add_size = current_size * add_pct
-
-        if add_size <= 0:
+        if current_size <= 0:
             return
 
-        try:
-            result = await self.weex_client.place_order(
-                symbol=review.symbol,
-                side=add_side,
-                order_type="market",
-                size=str(add_size),
-            )
+        # Calculate add percentage (default 50% of current position)
+        add_pct = abs(review.suggested_size_change or 0.5)
 
-            logger.info(
-                f"Added {add_pct*100:.0f}% to position {review.symbol}: {result.get('orderId')}"
+        # Delegate to ExecutorAgent (single point of execution)
+        if self.executor_agent:
+            result = await self.executor_agent.execute_add(
+                trade_id=review.trade_id,
+                position=position,
+                add_pct=add_pct,
+                reason=review.reason,
             )
-
-        except Exception as e:
-            logger.error(f"Failed to add to position: {e}")
+            if result and result.get("success"):
+                logger.info(f"Position {review.symbol} increased by {add_pct*100:.0f}% via ExecutorAgent")
+            else:
+                logger.error(f"ExecutorAgent failed to add to position {review.symbol}")
+        else:
+            logger.error("No ExecutorAgent available - cannot add to position")
 
     async def _adjust_stop(
         self,
