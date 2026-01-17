@@ -51,41 +51,51 @@ WEEX_API_URL=https://api.weex.com
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                      WEEX AI Strategy Engine                                 │
+│                    Self-Evolving Agentic Trading System                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │                    Triple Memory System (Redis)                     │     │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐   │     │
+│  │  │   EPISODIC   │  │   SEMANTIC   │  │      PROCEDURAL        │   │     │
+│  │  │   (Trades)   │  │  (Patterns)  │  │   (Strategy Params)    │   │     │
+│  │  └──────────────┘  └──────────────┘  └────────────────────────┘   │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                                    │                                         │
+│  ┌─────────────────────────────────┼─────────────────────────────────┐      │
+│  │                         Learning Loops                             │      │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐   │      │
+│  │  │ POSITION REVIEW │  │  TRADE OUTCOME  │  │  CONSOLIDATION  │   │      │
+│  │  │   (Hourly)      │  │  (On Close)     │  │    (Daily)      │   │      │
+│  │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘   │      │
+│  │           └────────────────────┴────────────────────┘             │      │
+│  └───────────────────────────────────────────────────────────────────┘      │
+│                                   │                                          │
+│  ┌────────────────────────────────┼───────────────────────────────────┐     │
+│  │                    Reflection Agents                                │     │
+│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────────────┐  │     │
+│  │  │ REFLECTION    │  │    JUDGE      │  │       LEARNER         │  │     │
+│  │  │ (Position Mgr)│  │ (Trade Score) │  │ (Pattern Extraction)  │  │     │
+│  │  └───────────────┘  └───────────────┘  └───────────────────────┘  │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │              Services Layer (Multi-Timeframe + Redis)                │    │
-│  │  MarketData → Indicators → PatternDetector → AlphaGenerator         │    │
-│  │  (1H,4H,1D)    (EMA,RSI,BB)   (H&S,VCP)       (Aggregated Signals)  │    │
-│  └──────────────────────────────┬──────────────────────────────────────┘    │
-│                                 │                                            │
-│                                 ▼                                            │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                       Agent Orchestrator                              │   │
-│  │  Regime Detector → Strategy Selection → Portfolio Manager            │   │
-│  │       │                    │                    │                     │   │
-│  │       ▼                    ▼                    ▼                     │   │
-│  │  (Trend/Range?)    ┌──────────────┐    (Dynamic Confidence)          │   │
-│  │                    │ MeanRevert   │                                   │   │
-│  │                    │ TrendFollow  │                                   │   │
-│  │                    │ TurtleTrading│                                   │   │
-│  │                    └──────────────┘                                   │   │
-│  │                           │                                           │   │
-│  │                    Risk Manager → Execution Agent → WEEX API          │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
+│  │                    Existing Trading Pipeline                         │    │
+│  │  RegimeDetector → Strategies → PortfolioMgr → RiskMgr → Execution   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Services Layer
 
-1. **RedisClient** - Cache persistence for candle data (survives restarts)
+1. **RedisClient** - Cache persistence for candle data and trade memory
 2. **MarketDataService** - Multi-timeframe OHLCV (1H, 4H, 1D) with auto-refresh
 3. **IndicatorsService** - Technical indicators (EMA, RSI, BB, ATR)
 4. **PatternDetector** - Chart patterns (Head & Shoulders, VCP, Double Top/Bottom)
 5. **AlphaGenerator** - Multi-timeframe signal aggregation
+6. **TradeMemoryService** - Triple memory system (Episodic, Semantic, Procedural)
 
-### Key Agents
+### Trading Agents
 
 1. **Regime Detector** - Classifies market into volatility/trend/volume regimes
 2. **Mean Reversion Agent** - Fades extremes (RSI/BB on 4H timeframe)
@@ -94,6 +104,18 @@ WEEX_API_URL=https://api.weex.com
 5. **Portfolio Manager** - Dynamic confidence threshold gatekeeper
 6. **Risk Manager** - Position sizing and leverage checks
 7. **Execution Agent** - Order optimization and AI log recording
+
+### Self-Evolving RL Agents
+
+1. **Reflection Agent** - Reviews open positions hourly, suggests actions (HOLD/CLOSE/REDUCE/ADD)
+2. **Judge Agent** - Scores completed trades on multi-objective reward (return, timing, risk management)
+3. **Learner Agent** - Extracts patterns from trade history, evolves parameters within safe bounds
+
+### Learning Loops
+
+1. **Position Review Loop** - Runs hourly, checks if positions should be adjusted based on regime changes
+2. **Trade Outcome Loop** - Triggered on trade close, scores trade and generates LLM reflection
+3. **Consolidation Loop** - Runs daily, extracts patterns and applies parameter evolutions
 
 ## Key Directories
 
@@ -104,21 +126,31 @@ WEEX_API_URL=https://api.weex.com
 ├── strategy_engine/       # Trading strategy
 │   ├── main.py            # Entry point
 │   ├── core/              # Orchestrator, base classes
-│   ├── services/          # Shared services (NEW)
+│   ├── models/            # Data models
+│   │   └── memory.py      # TradeRecord, StrategyInsight, ParameterState
+│   ├── services/          # Shared services
 │   │   ├── redis_client.py      # Redis cache persistence
 │   │   ├── market_data_service.py # Multi-timeframe OHLCV
 │   │   ├── indicators_service.py  # Technical indicators
 │   │   ├── pattern_detector.py    # Chart patterns
-│   │   └── alpha_generator.py     # Signal aggregation
-│   └── agents/            # AI agents
-│       ├── turtle_trading.py      # Turtle breakout system
-│       ├── portfolio_manager.py   # Dynamic gatekeeper
-│       └── ...
+│   │   ├── alpha_generator.py     # Signal aggregation
+│   │   └── trade_memory.py        # Triple memory system
+│   ├── agents/            # AI agents
+│   │   ├── turtle_trading.py      # Turtle breakout system
+│   │   ├── portfolio_manager.py   # Dynamic gatekeeper
+│   │   ├── reflection_agent.py    # Position review (Self-Evolving RL)
+│   │   ├── judge_agent.py         # Trade scoring (Self-Evolving RL)
+│   │   ├── learner_agent.py       # Pattern extraction (Self-Evolving RL)
+│   │   └── ...
+│   └── loops/             # Learning loops (Self-Evolving RL)
+│       ├── position_review_loop.py   # Hourly position review
+│       ├── trade_outcome_loop.py     # On-close trade analysis
+│       └── consolidation_loop.py     # Daily learning consolidation
 ├── ai_logging/            # AI decision logging (hackathon requirement)
 ├── shared/                # Shared utilities
 │   ├── config.py          # Pydantic settings
 │   ├── discord.py         # Discord notifications
-│   └── llm.py             # LLM analysis
+│   └── llm.py             # LLM analysis + reflection methods
 ├── scripts/               # Utility scripts
 │   └── deploy.sh          # Production deployment
 ├── tests/                 # Unit tests
@@ -152,7 +184,7 @@ python -m strategy_engine.main
 ## Important Notes
 
 - **Multi-Timeframe**: Use 1H for entry timing, 4H for medium signals, 1D for Turtle breakouts
-- **Redis Persistence**: Candle data survives container restarts (check `docker exec weex-redis redis-cli keys "candles:*"`)
+- **Redis Persistence**: Candle data and trade memory survive container restarts
 - **Housekeeping**: Runs every 5 minutes, trims cache to limits
 - Portfolio Manager acts as gatekeeper - rejects low-confidence signals
 - Dynamic confidence threshold adjusts based on:
@@ -160,6 +192,65 @@ python -m strategy_engine.main
   - Daily drawdown
   - Recent win rate
   - Portfolio exposure
+
+## Self-Evolving RL System
+
+### Triple Memory System (Redis)
+
+| Memory Type | Purpose | TTL |
+|-------------|---------|-----|
+| **Episodic** | Trade records with full context | 90 days |
+| **Semantic** | Extracted patterns and insights | 1 year |
+| **Procedural** | Strategy parameters and evolution history | Never expires |
+
+**Redis Key Schema:**
+```
+memory:episodic:{trade_id}           → TradeRecord JSON
+memory:episodic:open                 → Set of open trade_ids
+memory:semantic:{insight_id}         → StrategyInsight JSON
+memory:procedural:{agent}:{param}    → ParameterState JSON
+memory:procedural:evolution          → List of evolutions
+```
+
+### Parameter Evolution Bounds
+
+The Learner Agent can autonomously adjust parameters within these bounds:
+
+```python
+PARAMETER_BOUNDS = {
+    "portfolio_manager": {
+        "base_confidence_threshold": (0.4, 0.8),
+        "max_portfolio_exposure": (0.3, 0.6),
+    },
+    "mean_reversion": {
+        "rsi_oversold": (20, 35),
+        "rsi_overbought": (65, 80),
+    },
+    "trend_following": {
+        "atr_multiplier": (1.5, 3.0),
+    },
+    "turtle_trading": {
+        "stop_atr_mult": (1.5, 3.0),
+        "risk_per_trade": (0.005, 0.02),
+    },
+}
+```
+
+### Verification Commands
+
+```bash
+# Check trade memory
+docker exec weex-redis redis-cli keys "memory:episodic:*"
+
+# Check insights
+docker exec weex-redis redis-cli keys "memory:semantic:*"
+
+# Check parameter states
+docker exec weex-redis redis-cli keys "memory:procedural:*"
+
+# Get open trades
+docker exec weex-redis redis-cli smembers "memory:episodic:open"
+```
 
 ## WEEX API Configuration
 

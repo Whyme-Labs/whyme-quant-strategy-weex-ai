@@ -2,7 +2,9 @@
 
 import asyncio
 import signal
-from typing import Optional
+import uuid
+from datetime import datetime
+from typing import Dict, Optional
 from loguru import logger
 
 from shared.config import get_settings
@@ -17,6 +19,7 @@ from .services import (
     IndicatorsService,
     PatternDetector,
     AlphaGenerator,
+    TradeMemoryService,
 )
 from .agents import (
     MarketAnalystAgent,
@@ -27,6 +30,16 @@ from .agents import (
     TrendFollowingAgent,
     TurtleTradingAgent,
     PortfolioManagerAgent,
+    # Self-evolving RL agents
+    ReflectionAgent,
+    JudgeAgent,
+    LearnerAgent,
+)
+from .models.memory import TradeRecord, TradeStatus, ExitReason
+from .loops import (
+    PositionReviewLoop,
+    TradeOutcomeLoop,
+    ConsolidationLoop,
 )
 
 
@@ -53,6 +66,20 @@ class StrategyEngine:
         self.indicators_service: Optional[IndicatorsService] = None
         self.pattern_detector: Optional[PatternDetector] = None
         self.alpha_generator: Optional[AlphaGenerator] = None
+
+        # Self-evolving RL system components
+        self.trade_memory: Optional[TradeMemoryService] = None
+        self.reflection_agent: Optional[ReflectionAgent] = None
+        self.judge_agent: Optional[JudgeAgent] = None
+        self.learner_agent: Optional[LearnerAgent] = None
+
+        # Learning loops
+        self.position_review_loop: Optional[PositionReviewLoop] = None
+        self.trade_outcome_loop: Optional[TradeOutcomeLoop] = None
+        self.consolidation_loop: Optional[ConsolidationLoop] = None
+
+        # Track order_id -> trade_id mapping for exit tracking
+        self._order_to_trade: Dict[str, str] = {}
 
     async def initialize(self):
         """Initialize all components."""
@@ -104,6 +131,71 @@ class StrategyEngine:
             pattern_detector=self.pattern_detector,
         )
         logger.info("Alpha Generator initialized")
+
+        # Initialize Trade Memory Service (Triple Memory System)
+        self.trade_memory = TradeMemoryService(redis_client=self.redis_client)
+        await self.trade_memory.initialize()
+        logger.info("Trade Memory Service initialized (Episodic + Semantic + Procedural)")
+
+        # Initialize Self-Evolving RL Agents
+        self.reflection_agent = ReflectionAgent(
+            config={
+                "regime_change_sensitivity": 0.7,
+                "min_profit_to_add": 0.01,
+                "max_loss_before_review": -0.02,
+                "max_hold_time_hours": 168,
+            },
+            llm_analyzer=self.llm,
+        )
+
+        self.judge_agent = JudgeAgent(
+            config={
+                "target_sharpe": 2.0,
+                "min_return_for_good": 0.01,
+                "max_loss_penalty": -0.05,
+            },
+            llm_analyzer=self.llm,
+        )
+
+        self.learner_agent = LearnerAgent(
+            config={
+                "min_trades_for_pattern": 5,
+                "min_trades_for_evolution": 10,
+                "max_change_per_cycle": 0.15,
+                "confidence_for_evolution": 0.7,
+                "lookback_days": 30,
+            },
+            trade_memory=self.trade_memory,
+            llm_analyzer=self.llm,
+        )
+        logger.info("Self-evolving RL agents initialized (Reflection, Judge, Learner)")
+
+        # Initialize Learning Loops
+        self.position_review_loop = PositionReviewLoop(
+            weex_client=self.weex_client,
+            reflection_agent=self.reflection_agent,
+            trade_memory=self.trade_memory,
+            regime_detector=None,  # Will be set after orchestrator init
+            discord=self.discord,
+            interval_seconds=3600,  # 1 hour
+            symbol=self.settings.default_symbol,
+        )
+
+        self.trade_outcome_loop = TradeOutcomeLoop(
+            trade_memory=self.trade_memory,
+            judge_agent=self.judge_agent,
+            llm_analyzer=self.llm,
+            discord=self.discord,
+        )
+
+        self.consolidation_loop = ConsolidationLoop(
+            trade_memory=self.trade_memory,
+            learner_agent=self.learner_agent,
+            discord=self.discord,
+            lookback_days=30,
+            enable_auto_evolution=True,
+        )
+        logger.info("Learning loops initialized (Position Review, Trade Outcome, Consolidation)")
 
         # Initialize AI log uploader
         self.ai_uploader = AILogUploader(
@@ -218,11 +310,14 @@ class StrategyEngine:
             f"**Symbol:** {self.settings.default_symbol}\n"
             f"**Max Leverage:** {self.settings.max_leverage}x\n"
             f"**LLM:** {self.settings.llm_model}\n\n"
-            f"**NEW Multi-Timeframe System:**\n"
+            f"**Multi-Timeframe System:**\n"
             f"- Timeframes: 1H, 4H, 1D (real candles)\n"
-            f"- Indicators: 50+ via pandas-ta\n"
-            f"- Strategies: Turtle (20/55-day), Trend, MR\n"
-            f"- Alpha Generator: Signal aggregation",
+            f"- Strategies: Turtle (20/55-day), Trend, MR\n\n"
+            f"**Self-Evolving RL System:**\n"
+            f"- Triple Memory: Episodic, Semantic, Procedural\n"
+            f"- Reflection Agent: Position review (hourly)\n"
+            f"- Judge Agent: Trade scoring\n"
+            f"- Learner Agent: Pattern extraction & parameter evolution",
             color=0x00FF00,
         )
 
@@ -239,6 +334,11 @@ class StrategyEngine:
         await self.orchestrator.start()
         await self.ai_uploader.start()
 
+        # Start learning loops (run in background)
+        await self.position_review_loop.start()
+        await self.consolidation_loop.start()
+        logger.info("Learning loops started (Position Review: hourly, Consolidation: daily)")
+
         # Start main loop
         await self._main_loop()
 
@@ -254,6 +354,15 @@ class StrategyEngine:
             "WhyMe Quant AI Strategy Engine shutting down",
             color=0xFF6B6B,
         )
+
+        # Stop learning loops first
+        if self.position_review_loop:
+            await self.position_review_loop.stop()
+
+        if self.consolidation_loop:
+            await self.consolidation_loop.stop()
+
+        logger.info("Learning loops stopped")
 
         # Stop components
         if self.market_data_service:
@@ -390,6 +499,33 @@ class StrategyEngine:
 
             order_id = result.get("orderId")
             logger.info(f"Order placed: {order_id}")
+
+            # Record trade entry in episodic memory (Self-Evolving RL)
+            trade_id = str(uuid.uuid4())
+            trade_record = TradeRecord(
+                trade_id=trade_id,
+                symbol=signal.symbol,
+                entry_timestamp=datetime.now(),
+                entry_price=entry_price,
+                entry_side="long" if signal.action.value == "buy" else "short",
+                entry_size=signal.size,
+                entry_strategy=signal.strategy,
+                entry_regime=self._last_regime.copy() if self._last_regime else {},
+                entry_confidence=signal.confidence,
+                entry_reasoning=signal.reason or "",
+                market_data_at_entry=market_data.copy(),
+                agent_decisions=[],  # Could collect from orchestrator
+                entry_order_id=str(order_id) if order_id else None,
+                status=TradeStatus.OPEN,
+            )
+
+            await self.trade_memory.record_trade_entry(trade_record)
+
+            # Store mapping for exit tracking
+            if order_id:
+                self._order_to_trade[str(order_id)] = trade_id
+
+            logger.info(f"Trade recorded in episodic memory: {trade_id}")
 
             # Get LLM analysis for the executed trade
             llm_analysis = await self.llm.analyze_signal(

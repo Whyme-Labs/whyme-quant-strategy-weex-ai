@@ -225,6 +225,200 @@ Guidelines:
 
 You are analyzing for the WEEX AI Trading Hackathon where the goal is to maximize risk-adjusted returns."""
 
+    async def analyze_trade_outcome(
+        self,
+        symbol: str,
+        entry_price: float,
+        exit_price: float,
+        side: str,
+        pnl_pct: float,
+        duration_hours: float,
+        strategy: str,
+        entry_regime: Dict[str, str],
+        exit_regime: Dict[str, str],
+        entry_reasoning: str,
+        exit_reason: str,
+    ) -> str:
+        """Analyze a completed trade and generate reflection.
+
+        Args:
+            symbol: Trading symbol
+            entry_price: Entry price
+            exit_price: Exit price
+            side: Trade side (long/short)
+            pnl_pct: P&L percentage
+            duration_hours: Trade duration in hours
+            strategy: Strategy that generated the trade
+            entry_regime: Market regime at entry
+            exit_regime: Market regime at exit
+            entry_reasoning: Original reasoning for entry
+            exit_reason: Reason for exit
+
+        Returns:
+            LLM reflection on the trade
+        """
+        if not self.api_key:
+            return "LLM unavailable"
+
+        prompt = f"""
+Analyze this completed trade:
+
+**Trade Summary:**
+- Symbol: {symbol}
+- Side: {side.upper()}
+- Entry: ${entry_price:.2f} -> Exit: ${exit_price:.2f}
+- P&L: {pnl_pct:+.2f}%
+- Duration: {duration_hours:.1f} hours
+- Exit Reason: {exit_reason}
+
+**Strategy:** {strategy}
+**Entry Reasoning:** {entry_reasoning}
+
+**Entry Regime:**
+- Volatility: {entry_regime.get('volatility', 'unknown')}
+- Trend: {entry_regime.get('trend', 'unknown')}
+
+**Exit Regime:**
+- Volatility: {exit_regime.get('volatility', 'unknown')}
+- Trend: {exit_regime.get('trend', 'unknown')}
+
+Provide a brief reflection (2-3 sentences):
+1. What went well or poorly?
+2. One specific lesson for next time
+"""
+
+        try:
+            client = await self._get_client()
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": self.http_referer,
+                "X-Title": self.app_name,
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a trading coach reviewing completed trades. Be concise, specific, and actionable.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                "max_tokens": 250,
+                "temperature": 0.3,
+            }
+
+            response = await client.post(
+                self.api_url,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            logger.error(f"Trade outcome analysis failed: {e}")
+            return f"Analysis unavailable: {str(e)}"
+
+    async def extract_trading_patterns(
+        self,
+        trades_summary: str,
+        strategy_breakdown: str,
+        regime_breakdown: str,
+        worst_trades: str,
+        best_trades: str,
+    ) -> str:
+        """Extract patterns from trading history for learning.
+
+        Args:
+            trades_summary: Summary of total trades, P&L, win rate
+            strategy_breakdown: Performance by strategy
+            regime_breakdown: Performance by regime
+            worst_trades: Details of worst trades
+            best_trades: Details of best trades
+
+        Returns:
+            LLM analysis of patterns
+        """
+        if not self.api_key:
+            return "LLM unavailable"
+
+        prompt = f"""
+Analyze trading patterns from recent performance:
+
+**PERFORMANCE SUMMARY:**
+{trades_summary}
+
+**BY STRATEGY:**
+{strategy_breakdown}
+
+**BY REGIME:**
+{regime_breakdown}
+
+**WORST TRADES:**
+{worst_trades}
+
+**BEST TRADES:**
+{best_trades}
+
+Identify 2-3 specific, actionable patterns:
+1. What market conditions lead to losses?
+2. What conditions lead to wins?
+3. Which strategy/regime combinations should be avoided or prioritized?
+
+For each pattern:
+PATTERN: [name]
+DESCRIPTION: [what was observed]
+RECOMMENDATION: [what to do differently]
+"""
+
+        try:
+            client = await self._get_client()
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": self.http_referer,
+                "X-Title": self.app_name,
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a quantitative trading analyst identifying patterns in trade performance. Focus on actionable insights.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                "max_tokens": 500,
+                "temperature": 0.3,
+            }
+
+            response = await client.post(
+                self.api_url,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            logger.error(f"Pattern extraction failed: {e}")
+            return f"Analysis unavailable: {str(e)}"
+
     def _build_analysis_prompt(
         self,
         symbol: str,

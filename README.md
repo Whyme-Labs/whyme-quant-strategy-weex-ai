@@ -14,56 +14,43 @@ A multi-agent AI trading strategy for the **WEEX AI Hackathon: AI Wars Alpha Awa
 
 Based on research insights: *"There are only 2 trading strategies in the world: Mean Reversion and Trend Following. Some regimes reward trend following. Others reward mean reversion. Running both smooths returns and reduces drawdowns."*
 
+Our system features a **Self-Evolving Agentic RL Architecture** that learns from every trade and autonomously evolves its parameters within safe bounds.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                      WEEX AI Multi-Agent Strategy Engine                     │
+│                    Self-Evolving Agentic Trading System                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                    Services Layer (Multi-Timeframe)                  │    │
-│  │  ┌──────────────┐ ┌──────────────┐ ┌────────────┐ ┌──────────────┐  │    │
-│  │  │ MarketData   │ │ Indicators   │ │  Pattern   │ │    Alpha     │  │    │
-│  │  │ Service      │ │ Service      │ │  Detector  │ │  Generator   │  │    │
-│  │  │ (1H,4H,1D)   │ │ (EMA,RSI,BB) │ │ (H&S,VCP)  │ │ (Aggregated) │  │    │
-│  │  └──────┬───────┘ └──────┬───────┘ └─────┬──────┘ └──────┬───────┘  │    │
-│  │         └─────────────────┴───────────────┴──────────────┘          │    │
-│  │                              │ Redis Persistence                    │    │
-│  └──────────────────────────────┼──────────────────────────────────────┘    │
-│                                 ▼                                            │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                       Agent Orchestrator                              │   │
-│  │  ┌────────────────┐                                                   │   │
-│  │  │ Regime Detector│ ──▶ Classifies: Trending / Ranging / Volatile    │   │
-│  │  └───────┬────────┘                                                   │   │
-│  │          │                                                            │   │
-│  │   ┌──────┴──────┬─────────────┬────────────────┐                     │   │
-│  │   ▼             ▼             ▼                ▼                      │   │
-│  │ ┌────────┐ ┌─────────┐ ┌───────────┐ ┌─────────────────┐             │   │
-│  │ │ Mean   │ │ Trend   │ │  Turtle   │ │ Portfolio Mgr   │             │   │
-│  │ │Revert  │ │Following│ │ Trading   │ │ (Gatekeeper)    │             │   │
-│  │ │(RSI/BB)│ │(VCP/EMA)│ │(20/55 Day)│ │ Dynamic Conf.   │             │   │
-│  │ └────────┘ └─────────┘ └───────────┘ └─────────────────┘             │   │
-│  │                           │                                           │   │
-│  │   ┌───────────────────────┴───────────────────────┐                  │   │
-│  │   ▼                                               ▼                   │   │
-│  │ ┌────────────────┐                    ┌──────────────────┐           │   │
-│  │ │ Risk Manager   │                    │ Execution Agent  │           │   │
-│  │ │ (Max 20x Lev)  │                    │ (AI Log Upload)  │           │   │
-│  │ └────────────────┘                    └──────────────────┘           │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │                    Triple Memory System (Redis)                     │     │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐   │     │
+│  │  │   EPISODIC   │  │   SEMANTIC   │  │      PROCEDURAL        │   │     │
+│  │  │   (Trades)   │  │  (Patterns)  │  │   (Strategy Params)    │   │     │
+│  │  └──────────────┘  └──────────────┘  └────────────────────────┘   │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│                                    │                                         │
+│  ┌─────────────────────────────────┼─────────────────────────────────┐      │
+│  │                         Learning Loops                             │      │
+│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐   │      │
+│  │  │ POSITION REVIEW │  │  TRADE OUTCOME  │  │  CONSOLIDATION  │   │      │
+│  │  │   (Hourly)      │  │  (On Close)     │  │    (Daily)      │   │      │
+│  │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘   │      │
+│  │           └────────────────────┴────────────────────┘             │      │
+│  └───────────────────────────────────────────────────────────────────┘      │
 │                                   │                                          │
-│                                   ▼                                          │
-│                    ┌─────────────────────────────┐                          │
-│                    │        WEEX API Client       │                          │
-│                    │  (REST + AI Log Upload)      │                          │
-│                    └─────────────────────────────┘                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │   WEEX Exchange     │
-                         │   (Futures API)     │
-                         └─────────────────────┘
+│  ┌────────────────────────────────┼───────────────────────────────────┐     │
+│  │                    Reflection Agents                                │     │
+│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────────────┐  │     │
+│  │  │ REFLECTION    │  │    JUDGE      │  │       LEARNER         │  │     │
+│  │  │ (Position Mgr)│  │ (Trade Score) │  │ (Pattern Extraction)  │  │     │
+│  │  └───────────────┘  └───────────────┘  └───────────────────────┘  │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                    Existing Trading Pipeline                         │    │
+│  │  RegimeDetector → Strategies → PortfolioMgr → RiskMgr → Execution   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Strategy: Regime-Based Multi-Agent Trading
@@ -114,6 +101,67 @@ Based on research from professional traders:
 2. **Reduced Drawdowns**: Don't fight the market structure
 3. **Clear Decision Trail**: AI logs show regime → strategy → action
 4. **Research-Backed**: Based on proven professional trading wisdom
+
+## Self-Evolving RL System
+
+Our system implements a **Reflexion-style** architecture that learns from every trade and autonomously evolves parameters within safe bounds.
+
+### Triple Memory System (Redis)
+
+| Memory Type | Purpose | TTL |
+|-------------|---------|-----|
+| **Episodic** | Complete trade records with context, outcome, reflection | 90 days |
+| **Semantic** | Extracted patterns and insights from trade history | 1 year |
+| **Procedural** | Strategy parameters with evolution history | Never expires |
+
+### Reflection Agents
+
+| Agent | Role | Trigger |
+|-------|------|---------|
+| **ReflectionAgent** | Reviews open positions, suggests HOLD/CLOSE/REDUCE/ADD | Hourly |
+| **JudgeAgent** | Scores completed trades on multi-objective reward | On trade close |
+| **LearnerAgent** | Extracts patterns, evolves parameters autonomously | Daily consolidation |
+
+### Learning Loops
+
+| Loop | Frequency | Purpose |
+|------|-----------|---------|
+| **Position Review** | Every 1 hour | Check if positions should be adjusted based on regime changes |
+| **Trade Outcome** | On close | Record P&L, score trade, generate LLM reflection, extract lessons |
+| **Consolidation** | Daily | Extract patterns, generate insights, apply parameter evolutions |
+
+### Autonomous Parameter Evolution
+
+The Learner Agent can autonomously adjust parameters within safe bounds:
+
+```python
+PARAMETER_BOUNDS = {
+    "portfolio_manager": {
+        "base_confidence_threshold": (0.4, 0.8),  # Dynamic confidence
+        "max_portfolio_exposure": (0.3, 0.6),      # Position limits
+    },
+    "mean_reversion": {
+        "rsi_oversold": (20, 35),                  # Entry thresholds
+        "rsi_overbought": (65, 80),
+    },
+    "trend_following": {
+        "atr_multiplier": (1.5, 3.0),             # Stop distances
+    },
+    "turtle_trading": {
+        "stop_atr_mult": (1.5, 3.0),
+        "risk_per_trade": (0.005, 0.02),          # Position sizing
+    },
+}
+```
+
+### Multi-Objective Trade Scoring
+
+The Judge Agent scores each trade on:
+- **Return** (35%): Risk-adjusted return (Sharpe-like)
+- **Risk Management** (25%): Max adverse excursion penalty
+- **Execution** (15%): Slippage and fill quality
+- **Timing** (15%): Entry/exit timing quality
+- **Discipline** (10%): Adherence to strategy rules
 
 ## Quick Start
 
@@ -175,22 +223,31 @@ whyme-quant-strategy-weex-ai/
 │   ├── core/                 # Core abstractions
 │   │   ├── base.py          # Signal & SignalAction classes
 │   │   └── orchestrator.py  # Regime-based agent orchestrator
+│   ├── models/              # Data Models (Self-Evolving RL)
+│   │   └── memory.py         # TradeRecord, StrategyInsight, ParameterState
 │   ├── services/            # Shared Services Layer
 │   │   ├── redis_client.py   # Redis cache persistence
 │   │   ├── market_data_service.py # Multi-timeframe OHLCV with caching
 │   │   ├── indicators_service.py  # Technical indicator calculations
 │   │   ├── pattern_detector.py    # Chart pattern detection
-│   │   └── alpha_generator.py     # Signal aggregation & scoring
-│   └── agents/              # AI Agents (Multi-Agent System)
-│       ├── base_agent.py     # Base agent class
-│       ├── regime_detector.py # Market regime classification
-│       ├── mean_reversion.py # Mean reversion strategy (RSI, BB)
-│       ├── trend_following.py # Trend following strategy (VCP, EMA)
-│       ├── turtle_trading.py # Classic Turtle breakout (20/55 day)
-│       ├── portfolio_manager.py # Dynamic confidence gatekeeper
-│       ├── risk_manager.py   # Position sizing & risk control
-│       ├── execution.py      # Order execution optimization
-│       └── market_analyst.py # Legacy market analysis (fallback)
+│   │   ├── alpha_generator.py     # Signal aggregation & scoring
+│   │   └── trade_memory.py        # Triple Memory System (Episodic/Semantic/Procedural)
+│   ├── agents/              # AI Agents (Multi-Agent System)
+│   │   ├── base_agent.py     # Base agent class
+│   │   ├── regime_detector.py # Market regime classification
+│   │   ├── mean_reversion.py # Mean reversion strategy (RSI, BB)
+│   │   ├── trend_following.py # Trend following strategy (VCP, EMA)
+│   │   ├── turtle_trading.py # Classic Turtle breakout (20/55 day)
+│   │   ├── portfolio_manager.py # Dynamic confidence gatekeeper
+│   │   ├── risk_manager.py   # Position sizing & risk control
+│   │   ├── execution.py      # Order execution optimization
+│   │   ├── reflection_agent.py  # Position review (Self-Evolving RL)
+│   │   ├── judge_agent.py       # Trade scoring (Self-Evolving RL)
+│   │   └── learner_agent.py     # Pattern extraction (Self-Evolving RL)
+│   └── loops/               # Learning Loops (Self-Evolving RL)
+│       ├── position_review_loop.py  # Hourly position review
+│       ├── trade_outcome_loop.py    # On-close trade analysis
+│       └── consolidation_loop.py    # Daily learning consolidation
 ├── weex_client/              # WEEX API Client
 │   ├── client.py            # REST API client with AI log upload
 │   └── auth.py              # HMAC-SHA256 authentication
@@ -200,8 +257,8 @@ whyme-quant-strategy-weex-ai/
 │   └── models.py            # Log data models
 ├── shared/                   # Shared Utilities
 │   ├── config.py            # Pydantic settings
-│   ├── discord.py           # Discord webhook notifications
-│   └── llm.py               # LLM analysis client
+│   ├── discord.py           # Discord webhook notifications (insights, evolutions)
+│   └── llm.py               # LLM analysis client (trade reflection, pattern extraction)
 ├── docker-compose.yml        # Docker setup (strategy + redis)
 ├── Dockerfile               # Strategy engine container
 ├── requirements.txt

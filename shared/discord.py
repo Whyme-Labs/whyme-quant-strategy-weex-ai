@@ -233,6 +233,181 @@ class DiscordNotifier:
         except Exception as e:
             logger.error(f"Failed to send Discord error: {e}")
 
+    async def send_insight(
+        self,
+        pattern: str,
+        description: str,
+        confidence: float,
+        recommendation: str,
+        applies_when: Optional[Dict[str, Any]] = None,
+        sample_size: int = 0,
+    ):
+        """Send a strategy insight notification to Discord.
+
+        Args:
+            pattern: Pattern name
+            description: Pattern description
+            confidence: Confidence level (0-1)
+            recommendation: What to do differently
+            applies_when: Conditions when this applies
+            sample_size: Number of trades supporting this insight
+        """
+        if not self.webhook_url:
+            return
+
+        # Confidence bar
+        confidence_pct = int(confidence * 100)
+        filled = int(confidence * 10)
+        conf_bar = "█" * filled + "░" * (10 - filled)
+
+        # Determine color based on confidence
+        if confidence >= 0.8:
+            color = 0x2ECC71  # Green - high confidence
+        elif confidence >= 0.6:
+            color = 0xF39C12  # Orange - medium confidence
+        else:
+            color = 0x95A5A6  # Gray - low confidence
+
+        # Build applies_when string
+        applies_str = ""
+        if applies_when:
+            applies_str = "\n".join(f"• **{k}:** {v}" for k, v in applies_when.items())
+
+        embed = {
+            "title": f"🧠 Learning Insight: {pattern}",
+            "color": color,
+            "timestamp": datetime.utcnow().isoformat(),
+            "fields": [
+                {
+                    "name": "📝 Description",
+                    "value": description[:500] if len(description) > 500 else description,
+                    "inline": False,
+                },
+                {
+                    "name": "🎯 Confidence",
+                    "value": f"`{conf_bar}` {confidence_pct}%",
+                    "inline": True,
+                },
+                {
+                    "name": "📊 Sample Size",
+                    "value": f"`{sample_size} trades`",
+                    "inline": True,
+                },
+                {
+                    "name": "💡 Recommendation",
+                    "value": recommendation[:500] if len(recommendation) > 500 else recommendation,
+                    "inline": False,
+                },
+            ],
+            "footer": {
+                "text": "Self-Evolving RL System | WhyMe Labs",
+            },
+        }
+
+        # Add applies_when conditions if available
+        if applies_str:
+            embed["fields"].insert(3, {
+                "name": "⚡ Applies When",
+                "value": applies_str,
+                "inline": False,
+            })
+
+        payload = {
+            "username": self.bot_name,
+            "embeds": [embed],
+        }
+        if self.bot_avatar:
+            payload["avatar_url"] = self.bot_avatar
+
+        try:
+            client = await self._get_client()
+            response = await client.post(self.webhook_url, json=payload)
+            response.raise_for_status()
+            logger.debug(f"Discord insight sent: {pattern}")
+        except Exception as e:
+            logger.error(f"Failed to send Discord insight: {e}")
+
+    async def send_parameter_evolution(
+        self,
+        agent: str,
+        parameter: str,
+        old_value: Any,
+        new_value: Any,
+        reason: str,
+    ):
+        """Send a parameter evolution notification to Discord.
+
+        Args:
+            agent: Agent name
+            parameter: Parameter name
+            old_value: Previous value
+            new_value: New value
+            reason: Reason for change
+        """
+        if not self.webhook_url:
+            return
+
+        # Determine change direction
+        try:
+            if float(new_value) > float(old_value):
+                arrow = "⬆️"
+                color = 0x2ECC71  # Green
+            elif float(new_value) < float(old_value):
+                arrow = "⬇️"
+                color = 0xE74C3C  # Red
+            else:
+                arrow = "➡️"
+                color = 0x95A5A6  # Gray
+        except (ValueError, TypeError):
+            arrow = "🔄"
+            color = 0x3498DB  # Blue
+
+        embed = {
+            "title": f"⚙️ Parameter Evolution",
+            "color": color,
+            "timestamp": datetime.utcnow().isoformat(),
+            "fields": [
+                {
+                    "name": "🤖 Agent",
+                    "value": f"`{agent}`",
+                    "inline": True,
+                },
+                {
+                    "name": "📊 Parameter",
+                    "value": f"`{parameter}`",
+                    "inline": True,
+                },
+                {
+                    "name": f"{arrow} Change",
+                    "value": f"`{old_value}` → `{new_value}`",
+                    "inline": True,
+                },
+                {
+                    "name": "📝 Reason",
+                    "value": reason[:500] if len(reason) > 500 else reason,
+                    "inline": False,
+                },
+            ],
+            "footer": {
+                "text": "Self-Evolving RL System | WhyMe Labs",
+            },
+        }
+
+        payload = {
+            "username": self.bot_name,
+            "embeds": [embed],
+        }
+        if self.bot_avatar:
+            payload["avatar_url"] = self.bot_avatar
+
+        try:
+            client = await self._get_client()
+            response = await client.post(self.webhook_url, json=payload)
+            response.raise_for_status()
+            logger.debug(f"Discord parameter evolution sent: {agent}.{parameter}")
+        except Exception as e:
+            logger.error(f"Failed to send Discord parameter evolution: {e}")
+
     async def send_trace(self, stage: str, details: str, data: Optional[Dict[str, Any]] = None):
         """Send a debug trace message to Discord.
 
