@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   strategy-engine:
     build: .
@@ -18,8 +16,7 @@ services:
     image: redis:7-alpine
     container_name: weex-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # Port not exposed externally - only accessible within Docker network
     networks:
       - weex-network
     volumes:
