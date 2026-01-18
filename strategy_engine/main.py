@@ -95,7 +95,7 @@ class StrategyEngine:
         self.kelly_sizer: Optional[KellySizer] = None
         self.edge_scanner: Optional[EdgeScanner] = None
         self.performance_tracker: Optional[PerformanceTracker] = None
-        self._edge_mode_enabled: bool = True  # Enable edge-based trading
+        self._edge_mode_enabled: bool = False  # Disable edge mode, use regime-based strategies (Turtle, Trend, MR)
 
     async def initialize(self):
         """Initialize all components."""
