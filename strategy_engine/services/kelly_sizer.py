@@ -5,6 +5,7 @@ Implements Kelly Criterion-based position sizing:
 - Apply fractional Kelly for safety
 - Volatility adjustments
 - Portfolio correlation limits
+- BOOTSTRAP MODE: Warming edges trade with minimum size to collect data
 
 Kelly Criterion formula:
     kelly = (win_rate * payoff_ratio - loss_rate) / payoff_ratio
@@ -37,6 +38,7 @@ class KellySizer:
     2. Use fractional Kelly (25%) for safety against estimation errors
     3. Reduce size in high volatility
     4. Respect portfolio correlation limits
+    5. BOOTSTRAP MODE: Warming edges trade with minimum size to collect data
     """
 
     def __init__(
@@ -45,6 +47,7 @@ class KellySizer:
         max_position_pct: float = 0.10,  # Never more than 10% per trade
         min_position_pct: float = 0.01,  # Minimum 1% to be worth trading
         max_total_exposure: float = 0.50,  # Max 50% total portfolio exposure
+        bootstrap_position_pct: float = 0.02,  # 2% for warming edges (bootstrap)
     ):
         """Initialize Kelly Sizer.
 
@@ -53,15 +56,18 @@ class KellySizer:
             max_position_pct: Maximum position size as % of equity
             min_position_pct: Minimum position size to trade
             max_total_exposure: Maximum total portfolio exposure
+            bootstrap_position_pct: Position size for warming edges (bootstrap mode)
         """
         self.kelly_fraction = kelly_fraction
         self.max_position_pct = max_position_pct
         self.min_position_pct = min_position_pct
         self.max_total_exposure = max_total_exposure
+        self.bootstrap_position_pct = bootstrap_position_pct
 
         logger.info(
             f"KellySizer initialized: fraction={kelly_fraction:.0%}, "
-            f"max={max_position_pct:.0%}, min={min_position_pct:.0%}"
+            f"max={max_position_pct:.0%}, min={min_position_pct:.0%}, "
+            f"bootstrap={bootstrap_position_pct:.0%}"
         )
 
     def calculate_position_size(
@@ -75,6 +81,9 @@ class KellySizer:
     ) -> PositionSize:
         """Calculate position size based on edge statistics.
 
+        For WARMING edges: Uses bootstrap_position_pct (fixed small size)
+        For ACTIVE edges: Uses Kelly Criterion for optimal sizing
+
         Args:
             edge: Edge object with statistical properties
             account_equity: Current account equity in USD
@@ -86,16 +95,101 @@ class KellySizer:
         Returns:
             PositionSize object with calculated size and reasoning
         """
-        # Check if edge can be traded
-        if not self._validate_edge(edge):
-            return self._no_trade_position(edge, "Edge validation failed")
+        # Check basic validation
+        if edge.status == EdgeStatus.DISABLED:
+            return self._no_trade_position(edge, "Edge is disabled")
 
-        # Check if edge is mature enough
-        if edge.sample_size < edge.min_sample_size:
-            return self._no_trade_position(
-                edge,
-                f"Insufficient sample size: {edge.sample_size}/{edge.min_sample_size}",
+        if edge.status == EdgeStatus.PAUSED:
+            return self._no_trade_position(edge, f"Edge is paused: {edge.pause_reason or 'unknown'}")
+
+        # BOOTSTRAP MODE: Warming edges trade with minimum size
+        if edge.status == EdgeStatus.WARMING:
+            return self._bootstrap_position(
+                edge=edge,
+                account_equity=account_equity,
+                current_price=current_price,
+                volatility_adjustment=volatility_adjustment,
+                current_exposure=current_exposure,
             )
+
+        # ACTIVE edges: Full Kelly sizing
+        return self._kelly_position(
+            edge=edge,
+            account_equity=account_equity,
+            current_price=current_price,
+            volatility_adjustment=volatility_adjustment,
+            correlation_adjustment=correlation_adjustment,
+            current_exposure=current_exposure,
+        )
+
+    def _bootstrap_position(
+        self,
+        edge: Edge,
+        account_equity: float,
+        current_price: float,
+        volatility_adjustment: float,
+        current_exposure: float,
+    ) -> PositionSize:
+        """Calculate bootstrap position for WARMING edges.
+
+        Uses a fixed small position size to collect sample data.
+        Once edge has enough samples, it will transition to ACTIVE.
+        """
+        # Use bootstrap size with volatility adjustment
+        position_pct = self.bootstrap_position_pct * volatility_adjustment
+
+        # Check portfolio exposure limit
+        available_exposure = self.max_total_exposure - current_exposure
+        if position_pct > available_exposure:
+            if available_exposure <= 0:
+                return self._no_trade_position(
+                    edge, "Portfolio exposure limit reached"
+                )
+            position_pct = available_exposure
+
+        # Convert to units
+        position_value = account_equity * position_pct
+        position_size = position_value / current_price if current_price > 0 else 0
+
+        progress = f"{edge.sample_size}/{edge.min_sample_size}"
+        reason = f"Bootstrap mode ({progress} samples): {position_pct:.1%} of equity"
+
+        logger.info(
+            f"Edge {edge.edge_id} BOOTSTRAP: {position_pct:.1%} "
+            f"(samples: {progress})"
+        )
+
+        return PositionSize(
+            size=position_size,
+            size_usd=position_value,
+            position_pct=position_pct,
+            kelly_raw=0,  # No Kelly calc for bootstrap
+            kelly_fractional=0,
+            edge_expectancy=edge.expectancy,
+            edge_win_rate=edge.win_rate,
+            edge_payoff=edge.payoff_ratio,
+            volatility_adjustment=volatility_adjustment,
+            correlation_adjustment=1.0,
+            capped_by_max=False,
+            capped_by_correlation=current_exposure > 0,
+            reason=reason,
+            can_trade=True,
+        )
+
+    def _kelly_position(
+        self,
+        edge: Edge,
+        account_equity: float,
+        current_price: float,
+        volatility_adjustment: float,
+        correlation_adjustment: float,
+        current_exposure: float,
+    ) -> PositionSize:
+        """Calculate Kelly-based position for ACTIVE edges."""
+
+        # Validate edge has required data
+        if edge.avg_loss_pct <= 0:
+            return self._no_trade_position(edge, "Edge has no loss data")
 
         # Check if edge is profitable
         if edge.expectancy < edge.min_expectancy:
@@ -175,25 +269,6 @@ class KellySizer:
             reason=" ".join(reason_parts),
             can_trade=True,
         )
-
-    def _validate_edge(self, edge: Edge) -> bool:
-        """Validate edge can be traded.
-
-        Args:
-            edge: Edge to validate
-
-        Returns:
-            True if edge is valid for trading
-        """
-        if edge.status != EdgeStatus.ACTIVE:
-            logger.debug(f"Edge {edge.edge_id} not active: {edge.status}")
-            return False
-
-        if edge.avg_loss_pct <= 0:
-            logger.debug(f"Edge {edge.edge_id} has no loss data")
-            return False
-
-        return True
 
     def _calculate_kelly(self, edge: Edge) -> float:
         """Calculate raw Kelly fraction.
@@ -349,8 +424,12 @@ class KellySizer:
         current_exposure = 0.0
         existing_positions = {}
 
-        # Sort edges by expectancy (best edges first)
-        sorted_edges = sorted(edges, key=lambda e: e.expectancy, reverse=True)
+        # Sort edges: ACTIVE first, then by expectancy
+        def sort_key(e):
+            status_priority = 0 if e.status == EdgeStatus.ACTIVE else 1
+            return (status_priority, -e.expectancy)
+
+        sorted_edges = sorted(edges, key=sort_key)
 
         for edge in sorted_edges:
             symbol = edge.symbol
@@ -413,9 +492,14 @@ class KellySizer:
             1 for p in tradeable if p.capped_by_max or p.capped_by_correlation
         )
 
+        bootstrap_count = sum(
+            1 for p in tradeable if "Bootstrap" in p.reason
+        )
+
         return {
             "total_edges": len(positions),
             "tradeable_edges": len(tradeable),
+            "bootstrap_edges": bootstrap_count,
             "non_tradeable_edges": len(non_tradeable),
             "total_exposure_pct": total_exposure,
             "total_value_usd": total_value,
