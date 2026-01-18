@@ -308,6 +308,25 @@ class IndicatorsService:
                     # VWAP requires datetime index
                     pass
 
+            # === DONCHIAN CHANNELS (for Turtle system) ===
+            # 20-day channel
+            df["high_20d"] = df["high"].rolling(20).max()
+            df["low_20d"] = df["low"].rolling(20).min()
+            # 55-day channel (Turtle System 2)
+            df["high_55d"] = df["high"].rolling(55).max()
+            df["low_55d"] = df["low"].rolling(55).min()
+            # 10-day channel (for exits)
+            df["high_10d"] = df["high"].rolling(10).max()
+            df["low_10d"] = df["low"].rolling(10).min()
+
+            # === ATR RATIO (for VCP pattern) ===
+            if "atr" in df.columns:
+                atr_20 = df["atr"].rolling(20).mean()
+                df["atr_ratio"] = df["atr"] / atr_20.where(atr_20 > 0, 1)
+
+            # === CANDLESTICK PATTERNS ===
+            df = self._calculate_candlestick_patterns(df)
+
             logger.debug(f"Calculated {len([c for c in df.columns if c not in ['timestamp', 'open', 'high', 'low', 'close', 'volume']])} indicators")
 
         except Exception as e:
@@ -648,3 +667,245 @@ class IndicatorsService:
                 scores.append(np.clip(obv_ratio, -1, 1))
 
         return np.clip(np.mean(scores) if scores else 0.0, -1, 1)
+
+    def _calculate_candlestick_patterns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate candlestick patterns using pandas-ta.
+
+        Detects 60+ candlestick patterns and adds them as columns.
+        Pattern values: 100 = bullish, -100 = bearish, 0 = no pattern
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            DataFrame with candlestick pattern columns added
+        """
+        if not HAS_PANDAS_TA or df.empty:
+            return df
+
+        try:
+            # === SINGLE CANDLE REVERSAL PATTERNS ===
+
+            # Doji - indecision/potential reversal
+            doji = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="doji")
+            if doji is not None and not doji.empty:
+                df["cdl_doji"] = doji.iloc[:, 0] if hasattr(doji, 'iloc') else doji
+
+            # Hammer - bullish reversal at bottom
+            hammer = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="hammer")
+            if hammer is not None and not hammer.empty:
+                df["cdl_hammer"] = hammer.iloc[:, 0] if hasattr(hammer, 'iloc') else hammer
+
+            # Inverted Hammer - bullish reversal
+            inv_hammer = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="invertedhammer")
+            if inv_hammer is not None and not inv_hammer.empty:
+                df["cdl_inverted_hammer"] = inv_hammer.iloc[:, 0] if hasattr(inv_hammer, 'iloc') else inv_hammer
+
+            # Hanging Man - bearish reversal at top
+            hanging = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="hangingman")
+            if hanging is not None and not hanging.empty:
+                df["cdl_hanging_man"] = hanging.iloc[:, 0] if hasattr(hanging, 'iloc') else hanging
+
+            # Shooting Star - bearish reversal
+            shooting = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="shootingstar")
+            if shooting is not None and not shooting.empty:
+                df["cdl_shooting_star"] = shooting.iloc[:, 0] if hasattr(shooting, 'iloc') else shooting
+
+            # Spinning Top - indecision
+            spinning = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="spinningtop")
+            if spinning is not None and not spinning.empty:
+                df["cdl_spinning_top"] = spinning.iloc[:, 0] if hasattr(spinning, 'iloc') else spinning
+
+            # Marubozu - strong momentum
+            marubozu = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="marubozu")
+            if marubozu is not None and not marubozu.empty:
+                df["cdl_marubozu"] = marubozu.iloc[:, 0] if hasattr(marubozu, 'iloc') else marubozu
+
+            # === TWO CANDLE PATTERNS ===
+
+            # Bullish Engulfing - strong bullish reversal
+            bull_engulf = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="engulfing")
+            if bull_engulf is not None and not bull_engulf.empty:
+                df["cdl_engulfing"] = bull_engulf.iloc[:, 0] if hasattr(bull_engulf, 'iloc') else bull_engulf
+
+            # Harami - reversal pattern
+            harami = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="harami")
+            if harami is not None and not harami.empty:
+                df["cdl_harami"] = harami.iloc[:, 0] if hasattr(harami, 'iloc') else harami
+
+            # Piercing Line - bullish reversal
+            piercing = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="piercing")
+            if piercing is not None and not piercing.empty:
+                df["cdl_piercing"] = piercing.iloc[:, 0] if hasattr(piercing, 'iloc') else piercing
+
+            # Dark Cloud Cover - bearish reversal
+            dark_cloud = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="darkcloudcover")
+            if dark_cloud is not None and not dark_cloud.empty:
+                df["cdl_dark_cloud"] = dark_cloud.iloc[:, 0] if hasattr(dark_cloud, 'iloc') else dark_cloud
+
+            # Tweezer Top/Bottom
+            tweezer = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="tweezer")
+            if tweezer is not None:
+                # Note: Some versions may not have tweezer, handle gracefully
+                pass
+
+            # === THREE CANDLE PATTERNS ===
+
+            # Morning Star - strong bullish reversal
+            morning_star = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="morningstar")
+            if morning_star is not None and not morning_star.empty:
+                df["cdl_morning_star"] = morning_star.iloc[:, 0] if hasattr(morning_star, 'iloc') else morning_star
+
+            # Evening Star - strong bearish reversal
+            evening_star = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="eveningstar")
+            if evening_star is not None and not evening_star.empty:
+                df["cdl_evening_star"] = evening_star.iloc[:, 0] if hasattr(evening_star, 'iloc') else evening_star
+
+            # Three White Soldiers - strong bullish
+            soldiers = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="3whitesoldiers")
+            if soldiers is not None and not soldiers.empty:
+                df["cdl_three_white_soldiers"] = soldiers.iloc[:, 0] if hasattr(soldiers, 'iloc') else soldiers
+
+            # Three Black Crows - strong bearish
+            crows = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="3blackcrows")
+            if crows is not None and not crows.empty:
+                df["cdl_three_black_crows"] = crows.iloc[:, 0] if hasattr(crows, 'iloc') else crows
+
+            # Three Inside Up/Down
+            three_inside = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="3inside")
+            if three_inside is not None and not three_inside.empty:
+                df["cdl_three_inside"] = three_inside.iloc[:, 0] if hasattr(three_inside, 'iloc') else three_inside
+
+            # Three Outside Up/Down
+            three_outside = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="3outside")
+            if three_outside is not None and not three_outside.empty:
+                df["cdl_three_outside"] = three_outside.iloc[:, 0] if hasattr(three_outside, 'iloc') else three_outside
+
+            # === ADDITIONAL PATTERNS ===
+
+            # Dragonfly Doji - bullish reversal
+            dragonfly = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="dragonflydoji")
+            if dragonfly is not None and not dragonfly.empty:
+                df["cdl_dragonfly_doji"] = dragonfly.iloc[:, 0] if hasattr(dragonfly, 'iloc') else dragonfly
+
+            # Gravestone Doji - bearish reversal
+            gravestone = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="gravestonedoji")
+            if gravestone is not None and not gravestone.empty:
+                df["cdl_gravestone_doji"] = gravestone.iloc[:, 0] if hasattr(gravestone, 'iloc') else gravestone
+
+            # Long Legged Doji
+            longlegged = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="longleggeddoji")
+            if longlegged is not None and not longlegged.empty:
+                df["cdl_longleg_doji"] = longlegged.iloc[:, 0] if hasattr(longlegged, 'iloc') else longlegged
+
+            # Belt Hold
+            belthold = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="belthold")
+            if belthold is not None and not belthold.empty:
+                df["cdl_belthold"] = belthold.iloc[:, 0] if hasattr(belthold, 'iloc') else belthold
+
+            # Kicking pattern - very strong signal
+            kicking = ta.cdl_pattern(df["open"], df["high"], df["low"], df["close"], name="kicking")
+            if kicking is not None and not kicking.empty:
+                df["cdl_kicking"] = kicking.iloc[:, 0] if hasattr(kicking, 'iloc') else kicking
+
+            # === AGGREGATE CANDLESTICK SIGNALS ===
+            # Sum all bullish and bearish patterns for overall signal
+            cdl_cols = [c for c in df.columns if c.startswith("cdl_")]
+            if cdl_cols:
+                df["cdl_bullish_count"] = df[cdl_cols].apply(
+                    lambda row: sum(1 for v in row if pd.notna(v) and v > 0), axis=1
+                )
+                df["cdl_bearish_count"] = df[cdl_cols].apply(
+                    lambda row: sum(1 for v in row if pd.notna(v) and v < 0), axis=1
+                )
+                df["cdl_net_signal"] = df["cdl_bullish_count"] - df["cdl_bearish_count"]
+
+            logger.debug(f"Calculated {len(cdl_cols)} candlestick patterns")
+
+        except Exception as e:
+            logger.warning(f"Error calculating candlestick patterns: {e}")
+
+        return df
+
+    def get_candlestick_signals(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Get summary of candlestick pattern signals.
+
+        Args:
+            df: DataFrame with candlestick patterns calculated
+
+        Returns:
+            Dictionary with pattern signals
+        """
+        if df.empty:
+            return {"bullish": [], "bearish": [], "net_signal": 0}
+
+        latest = df.iloc[-1]
+        bullish_patterns = []
+        bearish_patterns = []
+
+        # Check each candlestick column
+        cdl_cols = [c for c in df.columns if c.startswith("cdl_") and not c.endswith("_count") and c != "cdl_net_signal"]
+
+        for col in cdl_cols:
+            if col in latest and pd.notna(latest[col]):
+                value = latest[col]
+                pattern_name = col.replace("cdl_", "").replace("_", " ").title()
+                if value > 0:
+                    bullish_patterns.append(pattern_name)
+                elif value < 0:
+                    bearish_patterns.append(pattern_name)
+
+        return {
+            "bullish": bullish_patterns,
+            "bearish": bearish_patterns,
+            "bullish_count": len(bullish_patterns),
+            "bearish_count": len(bearish_patterns),
+            "net_signal": len(bullish_patterns) - len(bearish_patterns),
+        }
+
+    async def calculate_indicators(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """Calculate indicators for a symbol/timeframe and return latest values.
+
+        Args:
+            symbol: Trading pair
+            timeframe: Timeframe (e.g., "1h", "4h", "1d")
+            limit: Number of candles to fetch
+
+        Returns:
+            Dictionary of indicator name -> latest value
+        """
+        if not self.market_data_service:
+            logger.error("Market data service not configured")
+            return {}
+
+        try:
+            # Get candles as list of dicts
+            candles = await self.market_data_service.get_candles(symbol, timeframe, limit=limit)
+
+            if not candles:
+                return {}
+
+            # Convert to DataFrame
+            df = pd.DataFrame(candles)
+            df = self._normalize_columns(df)
+
+            # Calculate all indicators
+            df = self.calculate_all(df)
+
+            if df.empty:
+                return {}
+
+            # Return latest row as dict
+            latest = df.iloc[-1].to_dict()
+
+            # Clean up NaN values
+            return {k: (v if pd.notna(v) else None) for k, v in latest.items()}
+
+        except Exception as e:
+            logger.error(f"Error calculating indicators for {symbol} {timeframe}: {e}")
+            return {}

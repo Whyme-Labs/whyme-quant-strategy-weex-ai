@@ -27,11 +27,25 @@ class EdgeStatus(str, Enum):
 
 class EdgeType(str, Enum):
     """Type of edge strategy."""
+    # Core strategies
     MEAN_REVERSION = "mean_reversion"
     TREND_FOLLOWING = "trend_following"
     TURTLE = "turtle"
     BREAKOUT = "breakout"
     MOMENTUM = "momentum"
+
+    # Indicator-based edges
+    MACD = "macd"
+    STOCHASTIC = "stochastic"
+    ICHIMOKU = "ichimoku"
+    SUPERTREND = "supertrend"
+
+    # Volume-based edges
+    VOLUME = "volume"
+
+    # Pattern-based edges
+    CHART_PATTERN = "chart_pattern"
+    CANDLESTICK = "candlestick"
 
 
 class EdgeHealthStatus(str, Enum):
