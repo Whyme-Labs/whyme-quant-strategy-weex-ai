@@ -7,6 +7,7 @@ Services provide shared functionality across agents:
 - PatternDetector: Chart pattern detection
 - AlphaGenerator: Signal aggregation and alpha scoring
 - TradeMemoryService: Triple memory system for self-evolving RL
+- TradeJournal: Human-readable trade journaling like a professional trader
 
 Statistical Edge Collection System:
 - EdgeRegistry: Manages all registered edges and their statistics
@@ -22,6 +23,7 @@ from .indicators_service import IndicatorsService
 from .pattern_detector import PatternDetector
 from .alpha_generator import AlphaGenerator
 from .trade_memory import TradeMemoryService
+from .trade_journal import TradeJournal
 from .edge_registry import EdgeRegistry
 from .kelly_sizer import KellySizer
 from .edge_scanner import EdgeScanner
@@ -34,6 +36,7 @@ __all__ = [
     "PatternDetector",
     "AlphaGenerator",
     "TradeMemoryService",
+    "TradeJournal",
     # Edge Collection System
     "EdgeRegistry",
     "KellySizer",

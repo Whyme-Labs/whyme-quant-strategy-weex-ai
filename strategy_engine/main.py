@@ -18,6 +18,7 @@ from .services import (
     PatternDetector,
     AlphaGenerator,
     TradeMemoryService,
+    TradeJournal,
     # Statistical Edge Collection System
     EdgeRegistry,
     KellySizer,
@@ -32,6 +33,8 @@ from .agents import (
     MeanReversionAgent,
     TrendFollowingAgent,
     TurtleTradingAgent,
+    MomentumAgent,
+    PivotAgent,
     PortfolioManagerAgent,
     # Self-evolving RL agents
     ReflectionAgent,
@@ -97,6 +100,9 @@ class StrategyEngine:
         self.performance_tracker: Optional[PerformanceTracker] = None
         self._edge_mode_enabled: bool = False  # Disable edge mode, use regime-based strategies (Turtle, Trend, MR)
 
+        # Trade Journal for human-readable trade logging
+        self.trade_journal: Optional[TradeJournal] = None
+
     async def initialize(self):
         """Initialize all components."""
         logger.info("Initializing WEEX AI Strategy Engine...")
@@ -155,6 +161,14 @@ class StrategyEngine:
 
         # Initialize Statistical Edge Collection System
         await self._initialize_edge_system()
+
+        # Initialize Trade Journal for human-readable logging
+        self.trade_journal = TradeJournal(
+            trade_memory=self.trade_memory,
+            redis_client=self.redis_client,
+            discord=self.discord,
+        )
+        logger.info("Trade Journal initialized (human-readable trade logging)")
 
         # Initialize Self-Evolving RL Agents
         self.reflection_agent = ReflectionAgent(
@@ -299,6 +313,34 @@ class StrategyEngine:
             ),
         )
 
+        # Momentum Agent - Trade with price momentum (ROC, RSI, MACD)
+        self.orchestrator.register_agent(
+            "momentum",
+            MomentumAgent(config={
+                "roc_period": 14,        # Rate of change period
+                "roc_threshold": 0.05,   # 5% ROC threshold for signal
+                "rsi_period": 14,        # RSI period
+                "volume_mult": 2.0,      # Volume surge multiplier
+                "macd_fast": 12,         # MACD fast EMA
+                "macd_slow": 26,         # MACD slow EMA
+                "macd_signal": 9,        # MACD signal line
+                "max_position_pct": 0.08, # 8% max position
+                "atr_multiplier": 2.0,   # Stop distance in ATRs
+            }),
+        )
+
+        # Pivot Agent - Trade pivot point support/resistance levels
+        self.orchestrator.register_agent(
+            "pivot",
+            PivotAgent(config={
+                "bounce_threshold": 0.002,    # 0.2% for bounce detection
+                "breakout_threshold": 0.005,  # 0.5% for breakout confirmation
+                "max_position_pct": 0.06,     # 6% max position
+                "use_fibonacci": False,       # Use standard pivots
+                "atr_multiplier": 1.5,        # Stop distance
+            }),
+        )
+
         # Stage 3: Portfolio Management (the execution gatekeeper)
         # This is the critical bridge between signals and execution
         # Dynamic confidence threshold based on portfolio state and market conditions
@@ -352,13 +394,14 @@ class StrategyEngine:
             f"- Kelly Fraction: 25% (conservative)\n\n"
             f"**Multi-Timeframe System:**\n"
             f"- Timeframes: 1H, 4H, 1D (real candles)\n"
-            f"- Strategies: Turtle (20/55-day), Trend, MR\n\n"
+            f"- Strategies: Turtle, Trend, MR, Momentum, Pivot\n\n"
             f"**Self-Evolving RL System:**\n"
             f"- Triple Memory: Episodic, Semantic, Procedural\n"
             f"- Position Monitor: Detects trade closes (60s interval)\n"
             f"- Position Review Loop: Hourly position reflection\n"
             f"- Trade Outcome Loop: Scoring & LLM reflection on close\n"
-            f"- Consolidation Loop: Daily pattern extraction",
+            f"- Consolidation Loop: Daily pattern extraction\n"
+            f"- Trade Journal: Human-readable logging & daily summaries",
             color=0x00FF00,
         )
 

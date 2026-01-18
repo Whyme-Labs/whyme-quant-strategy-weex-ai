@@ -6,6 +6,8 @@ Architecture:
   - Mean Reversion Agent: Buy low, sell high (fade extremes)
   - Trend Following Agent: Buy high, sell higher (ride trends)
   - Turtle Trading Agent: Classic breakout system (20/55-day channels)
+  - Momentum Agent: Trade with price momentum (ROC, RSI, MACD)
+  - Pivot Agent: Trade pivot point support/resistance levels
   - Risk Manager: Position sizing and risk control
   - Portfolio Manager: Gatekeeper, approves/rejects signals
 
@@ -26,6 +28,8 @@ from .regime_detector import RegimeDetectorAgent
 from .mean_reversion import MeanReversionAgent
 from .trend_following import TrendFollowingAgent
 from .turtle_trading import TurtleTradingAgent
+from .momentum import MomentumAgent
+from .pivot import PivotAgent
 from .portfolio_manager import PortfolioManagerAgent
 
 # Self-evolving RL agents
@@ -43,6 +47,8 @@ __all__ = [
     "MeanReversionAgent",
     "TrendFollowingAgent",
     "TurtleTradingAgent",
+    "MomentumAgent",
+    "PivotAgent",
     "PortfolioManagerAgent",
     # Executor (single point of execution)
     "ExecutorAgent",
