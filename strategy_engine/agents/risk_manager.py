@@ -85,17 +85,22 @@ class RiskManagerAgent(BaseAgent):
             Risk assessment
         """
         # Extract proposal details
-        size = proposal.get("size", 0)
+        size = proposal.get("size", 0)  # This is position_size_pct * 100 from strategy
         price = proposal.get("price", 0)
-        leverage = proposal.get("leverage", 1)
+        leverage = proposal.get("leverage", 20)  # Default 20x for WEEX hackathon
 
         # Get account info
-        balance = account.get("available_balance", 10000)  # Default for testing
+        balance = account.get("available_balance", 1000)  # Default for testing
+        equity = account.get("equity", balance)
         current_positions = account.get("position_value", 0)
 
         # Calculate metrics
-        trade_value = size * price if price else size
-        position_pct = trade_value / balance if balance > 0 else 1
+        # Note: size from strategy represents position_size_pct * 100 (e.g., 2.5 = 2.5%)
+        # So position_pct is size / 100
+        position_pct = size / 100 if size > 0 else 0
+
+        # Calculate actual trade value based on equity and position percentage
+        trade_value = equity * position_pct * leverage if equity > 0 else size
 
         # Risk checks
         checks = []
@@ -120,10 +125,10 @@ class RiskManagerAgent(BaseAgent):
         elif action == "sell" and trend == "bullish":
             checks.append("Warning: Selling against bullish trend")
 
-        # Calculate adjusted size if needed
+        # Calculate adjusted size if needed (size is in percentage * 100 format)
         adjusted_size = size
         if position_pct > self.max_position_pct:
-            adjusted_size = (self.max_position_pct * balance) / price if price else size * 0.5
+            adjusted_size = self.max_position_pct * 100  # Convert back to percentage * 100 format
 
         # Calculate confidence
         confidence = 0.9
@@ -149,6 +154,7 @@ class RiskManagerAgent(BaseAgent):
 
         return {
             "approved": approved,
+            "reason": "; ".join(checks) if checks else None,
             "checks": checks,
             "original_size": size,
             "adjusted_size": adjusted_size if adjusted_size != size else None,
