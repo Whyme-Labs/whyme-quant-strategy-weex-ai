@@ -561,13 +561,18 @@ class KeyLevelDetector:
         levels: List[KeyLevel],
     ) -> None:
         """Persist levels to Redis."""
-        if not self.redis_client:
+        if not self.redis_client or not self.redis_client.is_connected:
             return
 
         try:
+            import json
             key = f"key_levels:{symbol}"
             data = [l.to_dict() for l in levels]
-            await self.redis_client.set(key, data, ttl=86400)  # 24 hour TTL
+            await self.redis_client.client.set(
+                key,
+                json.dumps(data).encode('utf-8'),
+                ex=86400  # 24 hour TTL
+            )
         except Exception as e:
             logger.warning(f"Failed to persist key levels: {e}")
 
