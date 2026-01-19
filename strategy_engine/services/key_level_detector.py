@@ -60,17 +60,17 @@ class KeyLevel:
         return self.bounce_count / total if total > 0 else 0.5
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary."""
+        """Convert to dictionary with JSON-serializable types."""
         return {
-            "price": self.price,
+            "price": float(self.price),
             "level_type": self.level_type.value,
-            "is_support": self.is_support,
+            "is_support": bool(self.is_support),
             "strength": self.strength.value,
-            "timeframe": self.timeframe,
-            "test_count": self.test_count,
-            "bounce_count": self.bounce_count,
-            "break_count": self.break_count,
-            "bounce_rate": self.bounce_rate,
+            "timeframe": str(self.timeframe),
+            "test_count": int(self.test_count),
+            "bounce_count": int(self.bounce_count),
+            "break_count": int(self.break_count),
+            "bounce_rate": float(self.bounce_rate),
             "last_test": self.last_test.isoformat() if self.last_test else None,
         }
 
