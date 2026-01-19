@@ -230,6 +230,42 @@ class WeexClient:
             "GET", "/capi/v2/account/position/singlePosition", {"symbol": weex_symbol}
         )
 
+    async def set_position_mode(
+        self,
+        symbol: str,
+        margin_mode: int = 1,
+        separated_mode: int = 1,
+    ) -> Dict[str, Any]:
+        """Set position mode for a symbol.
+
+        Note: Cannot change mode while position is open on the symbol.
+
+        Args:
+            symbol: Trading pair (e.g., 'BTCUSDT')
+            margin_mode: 1=Cross, 3=Isolated
+            separated_mode: 1=Combined (one-way), 2=Separated (hedge mode)
+
+        Returns:
+            API response
+        """
+        weex_symbol = self._convert_symbol(symbol)
+        data = {
+            "symbol": weex_symbol,
+            "marginMode": margin_mode,
+            "separatedMode": separated_mode,
+        }
+        return await self._request(
+            "POST", "/capi/v2/account/position/changeHoldModel", data
+        )
+
+    async def get_account_settings(self) -> Dict[str, Any]:
+        """Get account settings including position modes.
+
+        Returns:
+            Account settings with mode configurations
+        """
+        return await self._request("GET", "/capi/v2/account/getAccounts")
+
     # ==================== Trade APIs ====================
 
     async def place_order(
