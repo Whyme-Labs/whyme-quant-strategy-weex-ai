@@ -350,7 +350,7 @@ class StrategyEngine:
                 "max_portfolio_exposure": 0.5,  # Max 50% of equity exposed
                 "max_single_position": 0.1,  # Max 10% per position
                 "max_correlated_exposure": 0.3,  # Max 30% in correlated assets
-                "base_confidence_threshold": 0.6,  # Starting confidence threshold
+                "base_confidence_threshold": 0.45,  # Starting confidence threshold (lowered for hackathon)
                 "max_daily_drawdown": 0.05,  # Stop trading at 5% daily drawdown
                 "win_rate_lookback": 20,  # Calculate win rate from last 20 trades
             }),
@@ -506,8 +506,18 @@ class StrategyEngine:
             try:
                 iteration_count += 1
 
-                # Fetch market data
+                # Fetch market data (ticker + OHLCV candles for proper calculations)
                 ticker = await self.weex_client.get_ticker(symbol)
+
+                # Get OHLCV candle data from MarketDataService for proper ATR, channel calculations
+                candles_1h_df = await self.market_data_service.get_candles(symbol, "1h", limit=50)
+                candles_4h_df = await self.market_data_service.get_candles(symbol, "4h", limit=50)
+                candles_1d_df = await self.market_data_service.get_candles(symbol, "1d", limit=60)  # For Turtle Trading (55-day)
+
+                # Convert DataFrames to list of dicts for agent consumption
+                candles_1h = candles_1h_df.to_dict('records') if not candles_1h_df.empty else []
+                candles_4h = candles_4h_df.to_dict('records') if not candles_4h_df.empty else []
+                candles_1d = candles_1d_df.to_dict('records') if not candles_1d_df.empty else []
 
                 market_data = {
                     "symbol": symbol,
@@ -519,6 +529,10 @@ class StrategyEngine:
                     "low_24h": float(ticker.get("low24h", 0)),
                     "change_24h": float(ticker.get("change24h", 0)),
                     "timestamp": ticker.get("timestamp"),
+                    # OHLCV candle data for proper indicator calculations
+                    "candles_1h": candles_1h,
+                    "candles_4h": candles_4h,
+                    "candles_1d": candles_1d,
                 }
 
                 # Process through agent orchestrator

@@ -90,7 +90,7 @@ class TrendFollowingAgent(BaseAgent):
 
         Args:
             context: Dictionary containing:
-                - market_data: Current market data
+                - market_data: Current market data with OHLCV candles
                 - regime: Current market regime
 
         Returns:
@@ -100,31 +100,41 @@ class TrendFollowingAgent(BaseAgent):
         regime = context.get("regime", {})
 
         current_price = market_data.get("price", 0)
-        high = market_data.get("high_24h", current_price)
-        low = market_data.get("low_24h", current_price)
         volume = market_data.get("volume", 0)
 
-        # Update history
-        if current_price > 0:
-            self.price_history.append(current_price)
-            self.high_history.append(high)
-            self.low_history.append(low)
-            self.volume_history.append(volume)
+        # Use OHLCV candle data for proper calculations (prefer 4h for trend following)
+        candles = market_data.get("candles_4h") or market_data.get("candles_1h") or []
 
-            # Keep limited history
-            max_len = max(self.channel_period, max(self.ema_periods)) * 2
-            if len(self.price_history) > max_len:
-                self.price_history = self.price_history[-max_len:]
-                self.high_history = self.high_history[-max_len:]
-                self.low_history = self.low_history[-max_len:]
-                self.volume_history = self.volume_history[-max_len:]
+        if candles and len(candles) >= 5:
+            # Extract OHLCV arrays from candles
+            self.price_history = [float(c.get("close", 0)) for c in candles]
+            self.high_history = [float(c.get("high", 0)) for c in candles]
+            self.low_history = [float(c.get("low", 0)) for c in candles]
+            self.volume_history = [float(c.get("volume", 0)) for c in candles]
+        else:
+            # Fallback: append current ticker data (less accurate)
+            if current_price > 0:
+                high = market_data.get("high_24h", current_price)
+                low = market_data.get("low_24h", current_price)
+                self.price_history.append(current_price)
+                self.high_history.append(high)
+                self.low_history.append(low)
+                self.volume_history.append(volume)
+
+                # Keep limited history
+                max_len = max(self.channel_period, max(self.ema_periods)) * 2
+                if len(self.price_history) > max_len:
+                    self.price_history = self.price_history[-max_len:]
+                    self.high_history = self.high_history[-max_len:]
+                    self.low_history = self.low_history[-max_len:]
+                    self.volume_history = self.volume_history[-max_len:]
 
         # Check if we have enough data
         min_required = max(self.channel_period, max(self.ema_periods))
         if len(self.price_history) < min_required:
             return {
                 "signal": None,
-                "reasoning": f"Insufficient data: {len(self.price_history)}/{min_required} periods"
+                "reasoning": f"Insufficient candle data: {len(self.price_history)}/{min_required} periods"
             }
 
         # Generate signals
