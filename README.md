@@ -153,7 +153,37 @@ This strategy uses specialized AI agents that collaborate based on detected mark
 | **IndicatorsService** | Technical indicator calculations | EMA, RSI, Bollinger Bands, ATR |
 | **PatternDetector** | Chart pattern recognition | Head & Shoulders, VCP, Double Top/Bottom |
 | **AlphaGenerator** | Signal aggregation | Multi-timeframe signal scoring |
+| **KeyLevelDetector** | Support/Resistance detection | Swing levels, Fibonacci, Volume Profile |
 | **RedisClient** | Cache persistence | Survives container restarts |
+
+### Support/Resistance Detection (KeyLevelDetector)
+
+Comprehensive key level detection system with 5 methods:
+
+1. **Dynamic Swing High/Low Detection**
+   - Identifies price points where price is highest/lowest within N candles before AND after
+   - Configurable lookback period (default: 5 candles)
+   - Works across all timeframes (1H, 4H, 1D)
+
+2. **Fibonacci Retracement/Extension**
+   - Retracement levels: 23.6%, 38.2%, 50%, 61.8%, 78.6%
+   - Extension levels: 127.2%, 161.8%, 261.8%
+   - Auto-calculated from detected swing points
+
+3. **Level Strength Tracking**
+   - Tracks how many times each level has been tested
+   - Measures bounce rate (successful holds vs breaks)
+   - Strength grades: Weak (1-2 tests), Moderate (3-4), Strong (5+), Very Strong (7+ with high bounce rate)
+
+4. **Multi-Timeframe S/R Clustering**
+   - Combines nearby levels from different timeframes
+   - Clustered levels weighted by timeframe significance (1D > 4H > 1H)
+   - Configurable cluster threshold (default: 0.5%)
+
+5. **Volume Profile S/R**
+   - High Volume Nodes (HVN): Areas of high trading activity → support/resistance
+   - Low Volume Nodes (LVN): Areas of low activity → price moves quickly through
+   - 50-bin volume histogram analysis
 
 ### AI Agents
 
@@ -324,6 +354,7 @@ whyme-quant-strategy-weex-ai/
 │   │   ├── indicators_service.py  # Technical indicator calculations
 │   │   ├── pattern_detector.py    # Chart pattern detection
 │   │   ├── alpha_generator.py     # Signal aggregation & scoring
+│   │   ├── key_level_detector.py  # Support/Resistance detection (Swing, Fib, Volume Profile)
 │   │   ├── trade_memory.py        # Triple Memory System (Episodic/Semantic/Procedural)
 │   │   ├── edge_registry.py       # Edge storage & statistics (Edge Collection)
 │   │   ├── kelly_sizer.py         # Kelly-based position sizing (Edge Collection)

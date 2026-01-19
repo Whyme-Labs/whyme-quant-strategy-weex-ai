@@ -133,6 +133,12 @@ TRADING_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
 4. **PatternDetector** - Chart patterns (11 patterns: Head & Shoulders, VCP, Double Top/Bottom, Flags, Wedges, Triangles)
 5. **AlphaGenerator** - Multi-timeframe signal aggregation with component weights
 6. **TradeMemoryService** - Triple memory system (Episodic, Semantic, Procedural)
+7. **KeyLevelDetector** - Support/Resistance detection with 5 methods:
+   - Dynamic swing high/low detection
+   - Fibonacci retracement/extension (23.6%, 38.2%, 50%, 61.8%, 78.6%, 127.2%, 161.8%, 261.8%)
+   - Level strength tracking (test count, bounce rate)
+   - Multi-timeframe S/R clustering
+   - Volume Profile analysis (HVN/LVN detection)
 
 **Signal Confirmation Services (Integrated in Orchestrator):**
 7. **AlphaGenerator** - Used as signal confirmation (boosts confidence if aligned, rejects if strongly disagrees)
