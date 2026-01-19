@@ -535,7 +535,7 @@ class StrategyEngine:
                             }
 
                     # Fetch open positions to ensure portfolio awareness across restarts
-                    positions = await self.weex_client.get_position(symbol)
+                    positions = await self.weex_client.get_positions(symbol)
                     if positions and isinstance(positions, list):
                         account_info["positions"] = [
                             {

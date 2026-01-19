@@ -172,9 +172,9 @@ class ExecutorAgent(BaseAgent):
                 price=None,  # No price for market orders
             )
 
-            order_id = result.get("orderId")
+            order_id = result.get("order_id") or result.get("orderId")
             if not order_id:
-                raise Exception("No order ID returned from exchange")
+                raise Exception(f"No order ID returned from exchange: {result}")
 
             logger.info(f"EXECUTOR: Order placed - {order_id}")
 
@@ -318,7 +318,7 @@ class ExecutorAgent(BaseAgent):
                 trade_side="close",
             )
 
-            order_id = result.get("orderId")
+            order_id = result.get("order_id") or result.get("orderId")
             logger.info(f"EXECUTOR: Close order placed - {order_id}")
 
             # Record exit in memory
@@ -428,7 +428,7 @@ class ExecutorAgent(BaseAgent):
                 trade_side="close",
             )
 
-            order_id = result.get("orderId")
+            order_id = result.get("order_id") or result.get("orderId")
 
             await self._log_discord(
                 "EXECUTOR: Position Reduced",
@@ -496,7 +496,7 @@ class ExecutorAgent(BaseAgent):
                 size=str(add_size),
             )
 
-            order_id = result.get("orderId")
+            order_id = result.get("order_id") or result.get("orderId")
 
             await self._log_discord(
                 "EXECUTOR: Position Increased",
