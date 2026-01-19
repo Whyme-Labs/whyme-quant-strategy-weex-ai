@@ -164,12 +164,15 @@ class ExecutorAgent(BaseAgent):
             )
 
             # Execute order - use market order for reliable execution
+            # Include stop loss and take profit if provided
             result = await self.weex_client.place_order(
                 symbol=symbol,
                 side=signal.action.value,
                 order_type="market",  # Use market orders for reliable execution
                 size=str(btc_size),
                 price=None,  # No price for market orders
+                stop_loss=signal.stop_price,  # SL from strategy
+                take_profit=signal.target_price,  # TP from strategy
             )
 
             order_id = result.get("order_id") or result.get("orderId")
@@ -290,7 +293,6 @@ class ExecutorAgent(BaseAgent):
         try:
             symbol = position.get("symbol", "").replace("cmt_", "").upper() or "BTCUSDT"
             hold_side = position.get("holdSide", "long")
-            close_side = "sell" if hold_side == "long" else "buy"
             size = abs(float(position.get("total", 0)))
 
             if size <= 0:
@@ -309,13 +311,12 @@ class ExecutorAgent(BaseAgent):
                 color=0xF39C12,  # Orange - closing
             )
 
-            # Execute close order
-            result = await self.weex_client.place_order(
+            # Execute close order using proper close_position method
+            result = await self.weex_client.close_position(
                 symbol=symbol,
-                side=close_side,
-                order_type="market",
+                side=hold_side,  # 'long' or 'short' - which position to close
                 size=str(size),
-                trade_side="close",
+                order_type="market",
             )
 
             order_id = result.get("order_id") or result.get("orderId")
@@ -404,7 +405,6 @@ class ExecutorAgent(BaseAgent):
         try:
             symbol = position.get("symbol", "").replace("cmt_", "").upper() or "BTCUSDT"
             hold_side = position.get("holdSide", "long")
-            close_side = "sell" if hold_side == "long" else "buy"
             current_size = abs(float(position.get("total", 0)))
             reduce_size = current_size * reduce_pct
 
@@ -420,12 +420,12 @@ class ExecutorAgent(BaseAgent):
                 color=0xF39C12,
             )
 
-            result = await self.weex_client.place_order(
+            # Use close_position for reducing
+            result = await self.weex_client.close_position(
                 symbol=symbol,
-                side=close_side,
-                order_type="market",
+                side=hold_side,  # 'long' or 'short' - which position to reduce
                 size=str(reduce_size),
-                trade_side="close",
+                order_type="market",
             )
 
             order_id = result.get("order_id") or result.get("orderId")

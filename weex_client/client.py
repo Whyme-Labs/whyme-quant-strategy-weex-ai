@@ -236,31 +236,36 @@ class WeexClient:
         size: str,
         price: Optional[str] = None,
         client_oid: Optional[str] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Place an order.
 
-        WEEX API uses snake_case parameters:
+        WEEX API parameters:
         - symbol: cmt_btcusdt format
         - client_oid: unique client order ID (required!)
         - size: contract size as string
-        - side: "1" (buy/long) or "2" (sell/short) for open
-        - type: "1" (limit) or "2" (market)
-        - order_type: "0" (normal)
-        - match_price: "1" for market orders
+        - type: "1" (open long), "2" (open short), "3" (close long), "4" (close short)
+        - order_type: "0" (normal), "1" (post-only), "2" (FOK), "3" (IOC)
+        - match_price: "0" (limit), "1" (market)
         - price: required for limit orders
+        - presetStopLossPrice: optional stop loss trigger price
+        - presetTakeProfitPrice: optional take profit trigger price
 
         Args:
             symbol: Trading pair (e.g., 'BTCUSDT')
-            side: 'buy' or 'sell' (will be converted to '1' or '2')
+            side: 'buy' or 'sell' (for opening positions)
             order_type: 'limit' or 'market'
             size: Order size (contracts)
             price: Limit price (required for limit orders)
             client_oid: Client order ID (auto-generated if not provided)
+            stop_loss: Optional stop loss price
+            take_profit: Optional take profit price
             **kwargs: Additional order parameters
 
         Returns:
-            Order response with orderId
+            Order response with order_id
         """
         import time
 
@@ -270,35 +275,96 @@ class WeexClient:
         if not client_oid:
             client_oid = str(int(time.time() * 1000))
 
-        # Convert side to WEEX format
-        # 1 = buy (open long), 2 = sell (open short)
-        side_code = "1" if side.lower() in ("buy", "long", "buy_single") else "2"
+        # Convert side to WEEX type format
+        # type: "1" (open long), "2" (open short), "3" (close long), "4" (close short)
+        if side.lower() in ("buy", "long", "buy_single"):
+            position_type = "1"  # Open long
+        else:
+            position_type = "2"  # Open short
 
-        # Convert order_type to WEEX format
-        # 1 = limit, 2 = market
-        type_code = "1" if order_type.lower() == "limit" else "2"
+        # Convert order_type to WEEX match_price format
+        # match_price: "0" (limit), "1" (market)
+        match_price = "0" if order_type.lower() == "limit" else "1"
 
         data = {
             "symbol": weex_symbol,
             "client_oid": client_oid,
             "size": str(size),
-            "side": side_code,
-            "type": type_code,
+            "type": position_type,  # 1=open long, 2=open short
             "order_type": "0",  # Normal order
+            "match_price": match_price,  # 0=limit, 1=market
         }
-
-        # For market orders, set match_price
-        if order_type.lower() == "market":
-            data["match_price"] = "1"
 
         # For limit orders, add price
         if order_type.lower() == "limit" and price:
             data["price"] = str(price)
 
-        # Add any additional kwargs
-        data.update(kwargs)
+        # Add stop loss if provided
+        if stop_loss:
+            data["presetStopLossPrice"] = str(stop_loss)
+
+        # Add take profit if provided
+        if take_profit:
+            data["presetTakeProfitPrice"] = str(take_profit)
+
+        # Add any additional kwargs (filter out None values)
+        for key, value in kwargs.items():
+            if value is not None:
+                data[key] = value
 
         logger.info(f"Placing order: {data}")
+        return await self._request("POST", "/capi/v2/order/placeOrder", data=data)
+
+    async def close_position(
+        self,
+        symbol: str,
+        side: str,
+        size: str,
+        order_type: str = "market",
+        price: Optional[str] = None,
+        client_oid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Close a position.
+
+        Args:
+            symbol: Trading pair (e.g., 'BTCUSDT')
+            side: 'long' or 'short' - which position to close
+            size: Size to close
+            order_type: 'limit' or 'market'
+            price: Limit price (required for limit orders)
+            client_oid: Client order ID (auto-generated if not provided)
+
+        Returns:
+            Order response with order_id
+        """
+        import time
+
+        weex_symbol = self._convert_symbol(symbol)
+
+        if not client_oid:
+            client_oid = str(int(time.time() * 1000))
+
+        # type: "3" (close long), "4" (close short)
+        if side.lower() == "long":
+            position_type = "3"  # Close long
+        else:
+            position_type = "4"  # Close short
+
+        match_price = "0" if order_type.lower() == "limit" else "1"
+
+        data = {
+            "symbol": weex_symbol,
+            "client_oid": client_oid,
+            "size": str(size),
+            "type": position_type,  # 3=close long, 4=close short
+            "order_type": "0",  # Normal order
+            "match_price": match_price,
+        }
+
+        if order_type.lower() == "limit" and price:
+            data["price"] = str(price)
+
+        logger.info(f"Closing position: {data}")
         return await self._request("POST", "/capi/v2/order/placeOrder", data=data)
 
     async def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
