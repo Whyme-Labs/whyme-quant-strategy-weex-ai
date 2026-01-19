@@ -234,7 +234,7 @@ class WeexClient:
         self,
         symbol: str,
         margin_mode: int = 1,
-        separated_mode: int = 1,
+        separated_mode: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Set position mode for a symbol.
 
@@ -243,18 +243,19 @@ class WeexClient:
         Args:
             symbol: Trading pair (e.g., 'BTCUSDT')
             margin_mode: 1=Cross, 3=Isolated
-            separated_mode: 1=Combined (one-way), 2=Separated (hedge mode)
+            separated_mode: 1=Combined (one-way), 2=Separated (hedge mode), None=omit
 
         Returns:
             API response
         """
         weex_symbol = self._convert_symbol(symbol)
-        # API expects string values
+        # API expects integer values
         data = {
             "symbol": weex_symbol,
-            "marginMode": str(margin_mode),
-            "separatedMode": str(separated_mode),
+            "marginMode": margin_mode,
         }
+        if separated_mode is not None:
+            data["separatedMode"] = separated_mode
         return await self._request(
             "POST", "/capi/v2/account/position/changeHoldModel", data
         )
