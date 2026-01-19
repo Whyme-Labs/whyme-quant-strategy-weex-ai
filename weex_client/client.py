@@ -191,14 +191,10 @@ class WeexClient:
             symbol: Trading pair (e.g., 'BTCUSDT')
 
         Returns:
-            Account data
+            Account data with equity, available balance, etc.
         """
-        weex_symbol = self._convert_symbol(symbol)
-        return await self._request(
-            "GET",
-            "/capi/v2/account/account",
-            {"symbol": weex_symbol},
-        )
+        # Use /accounts endpoint which works without symbol param
+        return await self._request("GET", "/capi/v2/account/accounts")
 
     async def get_account_info(self) -> Dict[str, Any]:
         """Get general account information.
@@ -206,7 +202,15 @@ class WeexClient:
         Returns:
             Account info with equity, available balance, etc.
         """
-        return await self.get_account("BTCUSDT")
+        return await self.get_account()
+
+    async def get_assets(self) -> List[Dict[str, Any]]:
+        """Get account assets/balances.
+
+        Returns:
+            List of assets with available, equity, frozen amounts
+        """
+        return await self._request("GET", "/capi/v2/account/assets")
 
     async def get_positions(self, symbol: str = "BTCUSDT") -> List[Dict[str, Any]]:
         """Get open positions.
@@ -231,39 +235,70 @@ class WeexClient:
         order_type: str,
         size: str,
         price: Optional[str] = None,
-        margin_coin: str = "USDT",
-        trade_side: str = "open",
+        client_oid: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Place an order.
 
+        WEEX API uses snake_case parameters:
+        - symbol: cmt_btcusdt format
+        - client_oid: unique client order ID (required!)
+        - size: contract size as string
+        - side: "1" (buy/long) or "2" (sell/short) for open
+        - type: "1" (limit) or "2" (market)
+        - order_type: "0" (normal)
+        - match_price: "1" for market orders
+        - price: required for limit orders
+
         Args:
             symbol: Trading pair (e.g., 'BTCUSDT')
-            side: 'buy' or 'sell'
+            side: 'buy' or 'sell' (will be converted to '1' or '2')
             order_type: 'limit' or 'market'
-            size: Order size
+            size: Order size (contracts)
             price: Limit price (required for limit orders)
-            margin_coin: Margin currency
-            trade_side: 'open' or 'close'
+            client_oid: Client order ID (auto-generated if not provided)
             **kwargs: Additional order parameters
 
         Returns:
             Order response with orderId
         """
+        import time
+
         weex_symbol = self._convert_symbol(symbol)
+
+        # Generate client_oid if not provided (required by WEEX)
+        if not client_oid:
+            client_oid = str(int(time.time() * 1000))
+
+        # Convert side to WEEX format
+        # 1 = buy (open long), 2 = sell (open short)
+        side_code = "1" if side.lower() in ("buy", "long", "buy_single") else "2"
+
+        # Convert order_type to WEEX format
+        # 1 = limit, 2 = market
+        type_code = "1" if order_type.lower() == "limit" else "2"
+
         data = {
             "symbol": weex_symbol,
-            "marginCoin": margin_coin,
-            "side": side,
-            "orderType": order_type,
-            "size": size,
-            "tradeSide": trade_side,
-            **kwargs,
+            "client_oid": client_oid,
+            "size": str(size),
+            "side": side_code,
+            "type": type_code,
+            "order_type": "0",  # Normal order
         }
 
-        if price and order_type == "limit":
-            data["price"] = price
+        # For market orders, set match_price
+        if order_type.lower() == "market":
+            data["match_price"] = "1"
 
+        # For limit orders, add price
+        if order_type.lower() == "limit" and price:
+            data["price"] = str(price)
+
+        # Add any additional kwargs
+        data.update(kwargs)
+
+        logger.info(f"Placing order: {data}")
         return await self._request("POST", "/capi/v2/order/placeOrder", data=data)
 
     async def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
