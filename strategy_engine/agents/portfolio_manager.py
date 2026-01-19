@@ -184,25 +184,43 @@ class PortfolioManagerAgent(BaseAgent):
                 "reasoning": f"Must maintain {min_reserve_pct}% reserve. Available: ${available_margin:.2f}, Required reserve: ${min_reserve:.2f}",
             }
 
-        # Check 4: Already have open position in the same direction?
-        # This prevents repeated trades from the same signal
+        # Check 4: Position and timeframe conflict check
+        # Rules:
+        # - ONE position per symbol (no mixing strategies/timeframes)
+        # - Same direction: Cannot add to existing position
+        # - Opposite direction: Cannot open conflicting position
+        # This prevents timeframe conflicts (e.g., 4H LONG vs 1D SHORT)
         symbol = proposal.get("symbol", "BTCUSDT") if proposal else None
+        proposed_strategy = proposal.get("strategy", "unknown") if proposal else "unknown"
+        proposed_timeframe = proposal.get("timeframe", "4h") if proposal else "4h"
         action = proposal.get("action", "").lower() if proposal else ""
         proposed_side = "long" if action == "buy" else "short" if action == "sell" else ""
 
-        if symbol and proposed_side:
+        if symbol:
             for pos in existing_positions:
                 pos_symbol = pos.get("symbol", "").replace("cmt_", "").upper()
                 pos_side = pos.get("side", "").lower()
                 pos_size = float(pos.get("size", 0))
 
-                # Check if same symbol and same direction
-                if pos_symbol == symbol and pos_side == proposed_side and pos_size > 0:
-                    return {
-                        "decision": ExecutionDecision.REJECT.value,
-                        "approved": False,
-                        "reasoning": f"Already have open {pos_side.upper()} position on {symbol} (size: {pos_size}). Cannot open another {proposed_side.upper()}.",
-                    }
+                # If ANY position exists on this symbol, apply strict rules
+                if pos_symbol == symbol and pos_size > 0:
+                    if pos_side == proposed_side:
+                        # Same direction - don't add to position (prevents repeated trades)
+                        return {
+                            "decision": ExecutionDecision.REJECT.value,
+                            "approved": False,
+                            "reasoning": f"Already have open {pos_side.upper()} position on {symbol} (size: {pos_size:.4f}). "
+                                        f"Cannot add from {proposed_strategy} ({proposed_timeframe}). One position per symbol.",
+                        }
+                    else:
+                        # Opposite direction - conflicting signal from potentially different timeframe
+                        return {
+                            "decision": ExecutionDecision.REJECT.value,
+                            "approved": False,
+                            "reasoning": f"TIMEFRAME CONFLICT: Have {pos_side.upper()} on {symbol}, "
+                                        f"but {proposed_strategy} ({proposed_timeframe}) wants {proposed_side.upper()}. "
+                                        f"Close existing position first. No mixing timeframes/strategies.",
+                        }
 
         # If no proposal or hold, skip
         if not proposal or proposal.get("action") == "hold":
