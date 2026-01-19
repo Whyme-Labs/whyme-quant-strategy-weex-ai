@@ -140,40 +140,49 @@ class IndicatorsService:
             df["sma_20"] = ta.sma(df["close"], length=self.params["sma_period"])
 
             # MACD
-            macd = ta.macd(
-                df["close"],
-                fast=self.params["macd_fast"],
-                slow=self.params["macd_slow"],
-                signal=self.params["macd_signal"],
-            )
-            if macd is not None and not macd.empty:
-                df["macd"] = macd.iloc[:, 0]
-                df["macd_signal"] = macd.iloc[:, 2]
-                df["macd_hist"] = macd.iloc[:, 1]
+            try:
+                macd = ta.macd(
+                    df["close"],
+                    fast=self.params["macd_fast"],
+                    slow=self.params["macd_slow"],
+                    signal=self.params["macd_signal"],
+                )
+                if macd is not None and isinstance(macd, pd.DataFrame) and not macd.empty:
+                    df["macd"] = macd.iloc[:, 0]
+                    df["macd_signal"] = macd.iloc[:, 2]
+                    df["macd_hist"] = macd.iloc[:, 1]
+            except Exception as e:
+                logger.debug(f"MACD calculation failed: {e}")
 
             # ADX
-            adx = ta.adx(
-                df["high"],
-                df["low"],
-                df["close"],
-                length=self.params["adx_period"],
-            )
-            if adx is not None and not adx.empty:
-                df["adx"] = adx.iloc[:, 0]
-                df["di_plus"] = adx.iloc[:, 1]
-                df["di_minus"] = adx.iloc[:, 2]
+            try:
+                adx = ta.adx(
+                    df["high"],
+                    df["low"],
+                    df["close"],
+                    length=self.params["adx_period"],
+                )
+                if adx is not None and isinstance(adx, pd.DataFrame) and not adx.empty:
+                    df["adx"] = adx.iloc[:, 0]
+                    df["di_plus"] = adx.iloc[:, 1]
+                    df["di_minus"] = adx.iloc[:, 2]
+            except Exception as e:
+                logger.debug(f"ADX calculation failed: {e}")
 
             # SuperTrend
-            supertrend = ta.supertrend(
-                df["high"],
-                df["low"],
-                df["close"],
-                length=self.params["supertrend_period"],
-                multiplier=self.params["supertrend_multiplier"],
-            )
-            if supertrend is not None and not supertrend.empty:
-                df["supertrend"] = supertrend.iloc[:, 0]
-                df["supertrend_dir"] = supertrend.iloc[:, 1]  # 1 = bullish, -1 = bearish
+            try:
+                supertrend = ta.supertrend(
+                    df["high"],
+                    df["low"],
+                    df["close"],
+                    length=self.params["supertrend_period"],
+                    multiplier=self.params["supertrend_multiplier"],
+                )
+                if supertrend is not None and isinstance(supertrend, pd.DataFrame) and not supertrend.empty:
+                    df["supertrend"] = supertrend.iloc[:, 0]
+                    df["supertrend_dir"] = supertrend.iloc[:, 1]  # 1 = bullish, -1 = bearish
+            except Exception as e:
+                logger.debug(f"SuperTrend calculation failed: {e}")
 
             # Ichimoku
             try:
@@ -207,16 +216,19 @@ class IndicatorsService:
             df["rsi"] = ta.rsi(df["close"], length=self.params["rsi_period"])
 
             # Stochastic
-            stoch = ta.stoch(
-                df["high"],
-                df["low"],
-                df["close"],
-                k=self.params["stoch_k"],
-                d=self.params["stoch_d"],
-            )
-            if stoch is not None and not stoch.empty:
-                df["stoch_k"] = stoch.iloc[:, 0]
-                df["stoch_d"] = stoch.iloc[:, 1]
+            try:
+                stoch = ta.stoch(
+                    df["high"],
+                    df["low"],
+                    df["close"],
+                    k=self.params["stoch_k"],
+                    d=self.params["stoch_d"],
+                )
+                if stoch is not None and isinstance(stoch, pd.DataFrame) and not stoch.empty:
+                    df["stoch_k"] = stoch.iloc[:, 0]
+                    df["stoch_d"] = stoch.iloc[:, 1]
+            except Exception as e:
+                logger.debug(f"Stochastic calculation failed: {e}")
 
             # Williams %R
             df["willr"] = ta.willr(
@@ -240,17 +252,20 @@ class IndicatorsService:
             # === VOLATILITY INDICATORS ===
 
             # Bollinger Bands
-            bbands = ta.bbands(
-                df["close"],
-                length=self.params["bb_period"],
-                std=self.params["bb_std"],
-            )
-            if bbands is not None and not bbands.empty:
-                df["bb_lower"] = bbands.iloc[:, 0]
-                df["bb_mid"] = bbands.iloc[:, 1]
-                df["bb_upper"] = bbands.iloc[:, 2]
-                df["bb_width"] = bbands.iloc[:, 3]
-                df["bb_pct"] = bbands.iloc[:, 4]  # %B
+            try:
+                bbands = ta.bbands(
+                    df["close"],
+                    length=self.params["bb_period"],
+                    std=self.params["bb_std"],
+                )
+                if bbands is not None and isinstance(bbands, pd.DataFrame) and not bbands.empty:
+                    df["bb_lower"] = bbands.iloc[:, 0]
+                    df["bb_mid"] = bbands.iloc[:, 1]
+                    df["bb_upper"] = bbands.iloc[:, 2]
+                    df["bb_width"] = bbands.iloc[:, 3]
+                    df["bb_pct"] = bbands.iloc[:, 4]  # %B
+            except Exception as e:
+                logger.debug(f"Bollinger Bands calculation failed: {e}")
 
             # ATR
             df["atr"] = ta.atr(
@@ -261,29 +276,35 @@ class IndicatorsService:
             )
 
             # Keltner Channel
-            kc = ta.kc(
-                df["high"],
-                df["low"],
-                df["close"],
-                length=self.params["kc_period"],
-                scalar=self.params["kc_multiplier"],
-            )
-            if kc is not None and not kc.empty:
-                df["kc_lower"] = kc.iloc[:, 0]
-                df["kc_mid"] = kc.iloc[:, 1]
-                df["kc_upper"] = kc.iloc[:, 2]
+            try:
+                kc = ta.kc(
+                    df["high"],
+                    df["low"],
+                    df["close"],
+                    length=self.params["kc_period"],
+                    scalar=self.params["kc_multiplier"],
+                )
+                if kc is not None and isinstance(kc, pd.DataFrame) and not kc.empty:
+                    df["kc_lower"] = kc.iloc[:, 0]
+                    df["kc_mid"] = kc.iloc[:, 1]
+                    df["kc_upper"] = kc.iloc[:, 2]
+            except Exception as e:
+                logger.debug(f"Keltner Channel calculation failed: {e}")
 
             # Donchian Channel
-            donchian = ta.donchian(
-                df["high"],
-                df["low"],
-                lower_length=self.params["donchian_period"],
-                upper_length=self.params["donchian_period"],
-            )
-            if donchian is not None and not donchian.empty:
-                df["dc_lower"] = donchian.iloc[:, 0]
-                df["dc_mid"] = donchian.iloc[:, 1]
-                df["dc_upper"] = donchian.iloc[:, 2]
+            try:
+                donchian = ta.donchian(
+                    df["high"],
+                    df["low"],
+                    lower_length=self.params["donchian_period"],
+                    upper_length=self.params["donchian_period"],
+                )
+                if donchian is not None and isinstance(donchian, pd.DataFrame) and not donchian.empty:
+                    df["dc_lower"] = donchian.iloc[:, 0]
+                    df["dc_mid"] = donchian.iloc[:, 1]
+                    df["dc_upper"] = donchian.iloc[:, 2]
+            except Exception as e:
+                logger.debug(f"Donchian Channel calculation failed: {e}")
 
             # === VOLUME INDICATORS ===
 
