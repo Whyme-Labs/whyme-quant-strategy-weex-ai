@@ -249,10 +249,11 @@ class WeexClient:
             API response
         """
         weex_symbol = self._convert_symbol(symbol)
+        # API expects string values
         data = {
             "symbol": weex_symbol,
-            "marginMode": margin_mode,
-            "separatedMode": separated_mode,
+            "marginMode": str(margin_mode),
+            "separatedMode": str(separated_mode),
         }
         return await self._request(
             "POST", "/capi/v2/account/position/changeHoldModel", data
