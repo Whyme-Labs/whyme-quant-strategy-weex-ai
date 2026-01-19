@@ -101,6 +101,8 @@ class TrendFollowingAgent(BaseAgent):
 
         current_price = market_data.get("price", 0)
         volume = market_data.get("volume", 0)
+        high = market_data.get("high_24h", current_price)
+        low = market_data.get("low_24h", current_price)
 
         # Use OHLCV candle data for proper calculations (prefer 4h for trend following)
         candles = market_data.get("candles_4h") or market_data.get("candles_1h") or []
@@ -111,11 +113,13 @@ class TrendFollowingAgent(BaseAgent):
             self.high_history = [float(c.get("high", 0)) for c in candles]
             self.low_history = [float(c.get("low", 0)) for c in candles]
             self.volume_history = [float(c.get("volume", 0)) for c in candles]
+            # Update high/low from latest candle for logging
+            if candles:
+                high = float(candles[-1].get("high", high))
+                low = float(candles[-1].get("low", low))
         else:
             # Fallback: append current ticker data (less accurate)
             if current_price > 0:
-                high = market_data.get("high_24h", current_price)
-                low = market_data.get("low_24h", current_price)
                 self.price_history.append(current_price)
                 self.high_history.append(high)
                 self.low_history.append(low)
