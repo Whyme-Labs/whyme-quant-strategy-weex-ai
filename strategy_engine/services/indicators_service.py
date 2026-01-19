@@ -176,17 +176,30 @@ class IndicatorsService:
                 df["supertrend_dir"] = supertrend.iloc[:, 1]  # 1 = bullish, -1 = bearish
 
             # Ichimoku
-            ichimoku = ta.ichimoku(
-                df["high"],
-                df["low"],
-                df["close"],
-            )
-            if ichimoku is not None and len(ichimoku) > 0 and not ichimoku[0].empty:
-                ichi_df = ichimoku[0]
-                df["ichi_tenkan"] = ichi_df.iloc[:, 0]
-                df["ichi_kijun"] = ichi_df.iloc[:, 1]
-                df["ichi_senkou_a"] = ichi_df.iloc[:, 2]
-                df["ichi_senkou_b"] = ichi_df.iloc[:, 3]
+            try:
+                ichimoku = ta.ichimoku(
+                    df["high"],
+                    df["low"],
+                    df["close"],
+                )
+                # ichimoku returns a tuple of DataFrames; safely extract
+                if ichimoku is not None:
+                    if isinstance(ichimoku, tuple) and len(ichimoku) > 0:
+                        ichi_df = ichimoku[0]
+                        if ichi_df is not None and not ichi_df.empty and len(ichi_df.columns) >= 4:
+                            df["ichi_tenkan"] = ichi_df.iloc[:, 0]
+                            df["ichi_kijun"] = ichi_df.iloc[:, 1]
+                            df["ichi_senkou_a"] = ichi_df.iloc[:, 2]
+                            df["ichi_senkou_b"] = ichi_df.iloc[:, 3]
+                    elif isinstance(ichimoku, pd.DataFrame) and not ichimoku.empty:
+                        # Handle case where ichimoku returns single DataFrame
+                        if len(ichimoku.columns) >= 4:
+                            df["ichi_tenkan"] = ichimoku.iloc[:, 0]
+                            df["ichi_kijun"] = ichimoku.iloc[:, 1]
+                            df["ichi_senkou_a"] = ichimoku.iloc[:, 2]
+                            df["ichi_senkou_b"] = ichimoku.iloc[:, 3]
+            except Exception as e:
+                logger.debug(f"Ichimoku calculation failed: {e}")
 
             # === MOMENTUM INDICATORS ===
 

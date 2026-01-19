@@ -130,17 +130,23 @@ class MomentumAgent(BaseAgent):
         # Use OHLCV candle data for proper calculations (prefer 1h for momentum)
         candles = market_data.get("candles_1h") or market_data.get("candles_4h") or []
 
+        # Initialize high/low for AI logging
+        high = market_data.get("high_24h", current_price)
+        low = market_data.get("low_24h", current_price)
+
         if candles and len(candles) >= 5:
             # Extract OHLCV arrays from candles
             self.price_history = [float(c.get("close", 0)) for c in candles]
             self.high_history = [float(c.get("high", 0)) for c in candles]
             self.low_history = [float(c.get("low", 0)) for c in candles]
             self.volume_history = [float(c.get("volume", 0)) for c in candles]
+            # Update high/low from latest candle
+            if candles:
+                high = float(candles[-1].get("high", high))
+                low = float(candles[-1].get("low", low))
         else:
             # Fallback: append current ticker data (less accurate)
             if current_price > 0:
-                high = market_data.get("high_24h", current_price)
-                low = market_data.get("low_24h", current_price)
                 self.price_history.append(current_price)
                 self.high_history.append(high)
                 self.low_history.append(low)
