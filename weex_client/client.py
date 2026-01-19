@@ -303,13 +303,13 @@ class WeexClient:
         if order_type.lower() == "limit" and price:
             data["price"] = str(price)
 
-        # Add stop loss if provided
+        # Add stop loss if provided (round to 0.1 stepSize requirement)
         if stop_loss:
-            data["presetStopLossPrice"] = str(stop_loss)
+            data["presetStopLossPrice"] = str(round(float(stop_loss), 1))
 
-        # Add take profit if provided
+        # Add take profit if provided (round to 0.1 stepSize requirement)
         if take_profit:
-            data["presetTakeProfitPrice"] = str(take_profit)
+            data["presetTakeProfitPrice"] = str(round(float(take_profit), 1))
 
         # Add any additional kwargs (filter out None values)
         for key, value in kwargs.items():
