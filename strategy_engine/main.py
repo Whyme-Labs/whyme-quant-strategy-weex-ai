@@ -588,6 +588,24 @@ class StrategyEngine:
                     # Execute the trade (Discord notification happens on success)
                     await self._execute_signal(signal, market_data)
 
+                # Periodic strategy analysis log (every 60 iterations = ~5 minutes)
+                if iteration_count % 60 == 0 and self.orchestrator.last_strategy_analysis:
+                    analysis_fields = {}
+                    for strategy_name, has_signal, reasoning in self.orchestrator.last_strategy_analysis:
+                        status = "✅ SIGNAL" if has_signal else "⏸️ Waiting"
+                        # Truncate reasoning if too long
+                        short_reasoning = reasoning[:100] + "..." if len(reasoning) > 100 else reasoning
+                        analysis_fields[strategy_name] = f"{status}\n{short_reasoning}"
+
+                    await self.discord.send_trace(
+                        "Strategy Analysis",
+                        f"Strategy scan results for {symbol}",
+                        {
+                            "Price": f"${market_data['price']:,.2f}",
+                            **analysis_fields,
+                        }
+                    )
+
                 # Wait before next iteration
                 await asyncio.sleep(self.settings.main_loop_interval)
 

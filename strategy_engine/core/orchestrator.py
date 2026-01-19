@@ -40,6 +40,7 @@ class AgentOrchestrator:
         self.ai_logger = get_ai_logger()
         self._running = False
         self.last_regime = None
+        self.last_strategy_analysis = []  # Track strategy analysis for external logging
 
     def register_agent(self, name: str, agent: BaseAgent):
         """Register an agent with the orchestrator.
@@ -180,25 +181,41 @@ class AgentOrchestrator:
             logger.debug("Neutral regime - checking all strategies")
 
             signals = []
+            strategy_analysis = []  # Track all strategy analysis for logging
 
             if "mean_reversion" in self.agents:
                 mr_result = await self._run_agent("mean_reversion", context)
+                mr_reasoning = mr_result.get("reasoning", "No analysis")
+                strategy_analysis.append(("Mean Reversion", mr_result.get("signal") is not None, mr_reasoning))
                 if mr_result.get("signal"):
                     mr_result["strategy_source"] = "mean_reversion"
                     signals.append(mr_result)
+                else:
+                    logger.info(f"Mean Reversion: {mr_reasoning}")
 
             if "trend_following" in self.agents:
                 tf_result = await self._run_agent("trend_following", context)
+                tf_reasoning = tf_result.get("reasoning", "No analysis")
+                strategy_analysis.append(("Trend Following", tf_result.get("signal") is not None, tf_reasoning))
                 if tf_result.get("signal"):
                     tf_result["strategy_source"] = "trend_following"
                     signals.append(tf_result)
+                else:
+                    logger.info(f"Trend Following: {tf_reasoning}")
 
             # Also check Turtle Trading for breakout opportunities
             if "turtle_trading" in self.agents:
                 turtle_result = await self._run_agent("turtle_trading", context)
+                turtle_reasoning = turtle_result.get("reasoning", "No analysis")
+                strategy_analysis.append(("Turtle Trading", turtle_result.get("signal") is not None, turtle_reasoning))
                 if turtle_result.get("signal"):
                     turtle_result["strategy_source"] = "turtle_trading"
                     signals.append(turtle_result)
+                else:
+                    logger.info(f"Turtle Trading: {turtle_reasoning}")
+
+            # Store analysis for external access
+            self.last_strategy_analysis = strategy_analysis
 
             # Return strongest signal (by confidence or position size)
             if signals:
