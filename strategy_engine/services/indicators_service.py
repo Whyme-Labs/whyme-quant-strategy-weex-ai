@@ -941,5 +941,16 @@ class IndicatorsService:
             return {k: (v if pd.notna(v) else None) for k, v in latest.items()}
 
         except Exception as e:
-            logger.error(f"Error calculating indicators for {symbol} {timeframe}: {e}")
+            # Use fallback indicators - this is handled gracefully
+            logger.debug(f"pandas-ta indicators unavailable for {symbol} {timeframe}, using fallback: {e}")
+            try:
+                # Try fallback calculation
+                df = pd.DataFrame(candles)
+                df = self._normalize_columns(df)
+                df = self._calculate_fallback(df)
+                if not df.empty:
+                    latest = df.iloc[-1].to_dict()
+                    return {k: (v if pd.notna(v) else None) for k, v in latest.items()}
+            except Exception as fallback_error:
+                logger.warning(f"Fallback indicators also failed for {symbol} {timeframe}: {fallback_error}")
             return {}
