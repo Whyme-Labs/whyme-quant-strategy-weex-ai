@@ -35,6 +35,7 @@ from .agents import (
     TurtleTradingAgent,
     MomentumAgent,
     PivotAgent,
+    PatternAgent,
     PortfolioManagerAgent,
     # Self-evolving RL agents
     ReflectionAgent,
@@ -214,8 +215,9 @@ class StrategyEngine:
             trade_memory=self.trade_memory,
             discord=self.discord,
             llm_analyzer=self.llm,
+            trade_journal=self.trade_journal,
         )
-        logger.info("Executor Agent initialized (single point of execution)")
+        logger.info("Executor Agent initialized (single point of execution, trade journal enabled)")
 
         # Initialize Learning Loops
         self.position_review_loop = PositionReviewLoop(
@@ -234,12 +236,14 @@ class StrategyEngine:
             judge_agent=self.judge_agent,
             llm_analyzer=self.llm,
             discord=self.discord,
+            trade_journal=self.trade_journal,
         )
 
         self.consolidation_loop = ConsolidationLoop(
             trade_memory=self.trade_memory,
             learner_agent=self.learner_agent,
             discord=self.discord,
+            trade_journal=self.trade_journal,
             lookback_days=30,
             enable_auto_evolution=True,
         )
@@ -253,7 +257,11 @@ class StrategyEngine:
         )
 
         # Initialize orchestrator with agents
-        self.orchestrator = AgentOrchestrator(config={})
+        self.orchestrator = AgentOrchestrator(
+            config={},
+            alpha_generator=self.alpha_generator,
+            edge_scanner=self.edge_scanner,
+        )
 
         # Register agents - Regime-based multi-agent architecture
         # Based on research: "Some regimes reward trend following. Others reward mean reversion."
@@ -269,29 +277,37 @@ class StrategyEngine:
         )
 
         # Stage 2: Strategy Agents (routed by regime)
+        # All strategy agents now use centralized IndicatorsService
         self.orchestrator.register_agent(
             "mean_reversion",
-            MeanReversionAgent(config={
-                "bb_period": 20,
-                "bb_std": 2.0,
-                "rsi_period": 14,
-                "rsi_oversold": 30,
-                "rsi_overbought": 70,
-                "max_position_pct": 0.05,  # 5% max per trade
-                "target_return_pct": 0.02,  # 2% target
-            }),
+            MeanReversionAgent(
+                config={
+                    "rsi_oversold": 30,
+                    "rsi_overbought": 70,
+                    "max_position_pct": 0.05,  # 5% max per trade
+                    "target_return_pct": 0.02,  # 2% target
+                    "timeframe": "4h",
+                },
+                indicators_service=self.indicators_service,
+                market_data_service=self.market_data_service,
+            ),
         )
 
         self.orchestrator.register_agent(
             "trend_following",
-            TrendFollowingAgent(config={
-                "channel_period": 20,  # Turtle-style 20-day breakout
-                "ema_periods": [8, 20, 50],
-                "atr_period": 14,
-                "atr_multiplier": 2.0,  # Stop distance
-                "max_position_pct": 0.1,  # 10% max per trade
-                "vcp_min_candles": 7,  # VCP pattern minimum
-            }),
+            TrendFollowingAgent(
+                config={
+                    "channel_period": 20,  # Turtle-style 20-day breakout
+                    "ema_periods": [8, 20, 50],
+                    "atr_period": 14,
+                    "atr_multiplier": 2.0,  # Stop distance
+                    "max_position_pct": 0.1,  # 10% max per trade
+                    "vcp_min_candles": 7,  # VCP pattern minimum
+                    "timeframe": "4h",
+                },
+                indicators_service=self.indicators_service,
+                market_data_service=self.market_data_service,
+            ),
         )
 
         # Turtle Trading Agent - Classic breakout system with REAL daily candles
@@ -316,29 +332,53 @@ class StrategyEngine:
         # Momentum Agent - Trade with price momentum (ROC, RSI, MACD)
         self.orchestrator.register_agent(
             "momentum",
-            MomentumAgent(config={
-                "roc_period": 14,        # Rate of change period
-                "roc_threshold": 0.05,   # 5% ROC threshold for signal
-                "rsi_period": 14,        # RSI period
-                "volume_mult": 2.0,      # Volume surge multiplier
-                "macd_fast": 12,         # MACD fast EMA
-                "macd_slow": 26,         # MACD slow EMA
-                "macd_signal": 9,        # MACD signal line
-                "max_position_pct": 0.08, # 8% max position
-                "atr_multiplier": 2.0,   # Stop distance in ATRs
-            }),
+            MomentumAgent(
+                config={
+                    "roc_period": 14,        # Rate of change period
+                    "roc_threshold": 0.05,   # 5% ROC threshold for signal
+                    "rsi_period": 14,        # RSI period
+                    "volume_mult": 2.0,      # Volume surge multiplier
+                    "macd_fast": 12,         # MACD fast EMA
+                    "macd_slow": 26,         # MACD slow EMA
+                    "macd_signal": 9,        # MACD signal line
+                    "max_position_pct": 0.08, # 8% max position
+                    "atr_multiplier": 2.0,   # Stop distance in ATRs
+                    "timeframe": "1h",       # Momentum on hourly
+                },
+                indicators_service=self.indicators_service,
+                market_data_service=self.market_data_service,
+            ),
         )
 
         # Pivot Agent - Trade pivot point support/resistance levels
         self.orchestrator.register_agent(
             "pivot",
-            PivotAgent(config={
-                "bounce_threshold": 0.002,    # 0.2% for bounce detection
-                "breakout_threshold": 0.005,  # 0.5% for breakout confirmation
-                "max_position_pct": 0.06,     # 6% max position
-                "use_fibonacci": False,       # Use standard pivots
-                "atr_multiplier": 1.5,        # Stop distance
-            }),
+            PivotAgent(
+                config={
+                    "bounce_threshold": 0.002,    # 0.2% for bounce detection
+                    "breakout_threshold": 0.005,  # 0.5% for breakout confirmation
+                    "max_position_pct": 0.06,     # 6% max position
+                    "use_fibonacci": False,       # Use standard pivots
+                    "atr_multiplier": 1.5,        # Stop distance
+                    "timeframe": "1d",            # Pivot on daily
+                },
+                indicators_service=self.indicators_service,
+                market_data_service=self.market_data_service,
+            ),
+        )
+
+        # Pattern Agent - Trade classical chart patterns
+        self.orchestrator.register_agent(
+            "pattern",
+            PatternAgent(
+                config={
+                    "min_confidence": 0.65,       # Minimum pattern confidence
+                    "max_position_pct": 0.06,    # 6% max position
+                    "timeframe": "4h",           # Pattern detection timeframe
+                },
+                market_data_service=self.market_data_service,
+                pattern_detector=self.pattern_detector,
+            ),
         )
 
         # Stage 3: Portfolio Management (the execution gatekeeper)
@@ -350,7 +390,7 @@ class StrategyEngine:
                 "max_portfolio_exposure": 0.5,  # Max 50% of equity exposed
                 "max_single_position": 0.1,  # Max 10% per position
                 "max_correlated_exposure": 0.3,  # Max 30% in correlated assets
-                "base_confidence_threshold": 0.45,  # Starting confidence threshold (lowered for hackathon)
+                "base_confidence_threshold": 0.40,  # Lower threshold for more trades
                 "max_daily_drawdown": 0.05,  # Stop trading at 5% daily drawdown
                 "win_rate_lookback": 20,  # Calculate win rate from last 20 trades
             }),
@@ -490,141 +530,152 @@ class StrategyEngine:
         """Main trading loop.
 
         Routes to edge-based or regime-based loop based on configuration.
+        Now iterates over multiple symbols for more trading opportunities.
         """
         # Use edge-based loop if enabled and initialized
         if self._edge_mode_enabled and self.edge_scanner:
             await self._edge_based_main_loop()
             return
 
-        # Fallback to regime-based loop
-        symbol = self.settings.default_symbol
-        logger.info(f"Starting regime-based main loop for {symbol}")
+        # Get list of trading symbols
+        symbols = [s.strip() for s in self.settings.trading_symbols.split(",")]
+        logger.info(f"Starting multi-symbol main loop for {len(symbols)} symbols: {symbols}")
         iteration_count = 0
-        last_regime_log = None  # Track last logged regime to avoid spam
+        last_regime_log = {}  # Track last logged regime per symbol to avoid spam
 
         while self._running:
             try:
                 iteration_count += 1
 
-                # Fetch market data (ticker + OHLCV candles for proper calculations)
-                ticker = await self.weex_client.get_ticker(symbol)
+                # Process each symbol
+                for symbol in symbols:
+                    if not self._running:
+                        break
 
-                # Get OHLCV candle data from MarketDataService for proper ATR, channel calculations
-                candles_1h_df = await self.market_data_service.get_candles(symbol, "1h", limit=50)
-                candles_4h_df = await self.market_data_service.get_candles(symbol, "4h", limit=50)
-                candles_1d_df = await self.market_data_service.get_candles(symbol, "1d", limit=60)  # For Turtle Trading (55-day)
+                    try:
+                        # Fetch market data (ticker + OHLCV candles for proper calculations)
+                        ticker = await self.weex_client.get_ticker(symbol)
 
-                # Convert DataFrames to list of dicts for agent consumption
-                candles_1h = candles_1h_df.to_dict('records') if not candles_1h_df.empty else []
-                candles_4h = candles_4h_df.to_dict('records') if not candles_4h_df.empty else []
-                candles_1d = candles_1d_df.to_dict('records') if not candles_1d_df.empty else []
+                        # Get OHLCV candle data from MarketDataService for proper ATR, channel calculations
+                        candles_1h_df = await self.market_data_service.get_candles(symbol, "1h", limit=50)
+                        candles_4h_df = await self.market_data_service.get_candles(symbol, "4h", limit=50)
+                        candles_1d_df = await self.market_data_service.get_candles(symbol, "1d", limit=60)  # For Turtle Trading (55-day)
 
-                # Fetch account info for portfolio manager (including positions for restart awareness)
-                account_info = {}
-                try:
-                    assets = await self.weex_client.get_assets()
-                    if assets and isinstance(assets, list):
-                        usdt_asset = next((a for a in assets if a.get("coinName") == "USDT"), None)
-                        if usdt_asset:
-                            account_info = {
-                                "equity": float(usdt_asset.get("equity", 0)),
-                                "available": float(usdt_asset.get("available", 0)),
-                                "usedMargin": float(usdt_asset.get("frozen", 0)),
-                                "unrealizedPnl": float(usdt_asset.get("unrealizePnl", 0)),
-                                "positions": [],  # Will be populated below
-                            }
+                        # Convert DataFrames to list of dicts for agent consumption
+                        candles_1h = candles_1h_df.to_dict('records') if not candles_1h_df.empty else []
+                        candles_4h = candles_4h_df.to_dict('records') if not candles_4h_df.empty else []
+                        candles_1d = candles_1d_df.to_dict('records') if not candles_1d_df.empty else []
 
-                    # Fetch open positions to ensure portfolio awareness across restarts
-                    positions = await self.weex_client.get_positions(symbol)
-                    if positions and isinstance(positions, list):
-                        account_info["positions"] = [
-                            {
-                                "symbol": p.get("symbol", symbol),
-                                "side": p.get("side", "LONG").lower(),  # API returns 'LONG'/'SHORT'
-                                "size": float(p.get("size", 0)),  # API returns 'size' not 'total'
-                                "entryPrice": float(p.get("averageOpenPrice", 0)),
-                                "unrealizedPnl": float(p.get("unrealizePnl", 0)),
-                                "margin": float(p.get("marginSize", 0)),
-                            }
-                            for p in positions
-                            if float(p.get("size", 0)) > 0
-                        ]
-                        if account_info["positions"]:
-                            logger.info(f"Portfolio state: {len(account_info['positions'])} open positions")
-                except Exception as e:
-                    logger.debug(f"Failed to fetch account info: {e}")
+                        # Fetch account info for portfolio manager (including positions for restart awareness)
+                        account_info = {}
+                        try:
+                            assets = await self.weex_client.get_assets()
+                            if assets and isinstance(assets, list):
+                                usdt_asset = next((a for a in assets if a.get("coinName") == "USDT"), None)
+                                if usdt_asset:
+                                    account_info = {
+                                        "equity": float(usdt_asset.get("equity", 0)),
+                                        "available": float(usdt_asset.get("available", 0)),
+                                        "usedMargin": float(usdt_asset.get("frozen", 0)),
+                                        "unrealizedPnl": float(usdt_asset.get("unrealizePnl", 0)),
+                                        "positions": [],  # Will be populated below
+                                    }
 
-                market_data = {
-                    "symbol": symbol,
-                    "price": float(ticker.get("last", 0)),
-                    "bid": float(ticker.get("bestBid", 0)),
-                    "ask": float(ticker.get("bestAsk", 0)),
-                    "volume": float(ticker.get("baseVolume", 0)),
-                    "high_24h": float(ticker.get("high24h", 0)),
-                    "low_24h": float(ticker.get("low24h", 0)),
-                    "change_24h": float(ticker.get("change24h", 0)),
-                    "timestamp": ticker.get("timestamp"),
-                    # OHLCV candle data for proper indicator calculations
-                    "candles_1h": candles_1h,
-                    "candles_4h": candles_4h,
-                    "candles_1d": candles_1d,
-                    # Account info for portfolio manager
-                    "account_info": account_info,
-                }
+                            # Fetch open positions to ensure portfolio awareness across restarts
+                            positions = await self.weex_client.get_positions(symbol)
+                            if positions and isinstance(positions, list):
+                                account_info["positions"] = [
+                                    {
+                                        "symbol": p.get("symbol", symbol),
+                                        "side": p.get("side", "LONG").lower(),  # API returns 'LONG'/'SHORT'
+                                        "size": float(p.get("size", 0)),  # API returns 'size' not 'total'
+                                        "entryPrice": float(p.get("averageOpenPrice", 0)),
+                                        "unrealizedPnl": float(p.get("unrealizePnl", 0)),
+                                        "margin": float(p.get("marginSize", 0)),
+                                    }
+                                    for p in positions
+                                    if float(p.get("size", 0)) > 0
+                                ]
+                                if account_info["positions"]:
+                                    logger.debug(f"{symbol}: {len(account_info['positions'])} open positions")
+                        except Exception as e:
+                            logger.debug(f"Failed to fetch account info for {symbol}: {e}")
 
-                # Process through agent orchestrator
-                signal = await self.orchestrator.process_market_data(market_data)
-
-                # Get last regime from orchestrator
-                if self.orchestrator.last_regime:
-                    new_regime = self.orchestrator.last_regime
-                    regime_data = new_regime.get("regime", {})
-                    recommended = new_regime.get("recommended_strategy", "neutral")
-
-                    # Log regime changes to Discord (not every tick)
-                    regime_key = f"{regime_data.get('volatility')}-{regime_data.get('trend')}-{recommended}"
-                    if regime_key != last_regime_log:
-                        last_regime_log = regime_key
-                        self._last_regime = regime_data
-
-                        await self.discord.send_trace(
-                            "Regime",
-                            f"Market regime detected for {symbol}",
-                            {
-                                "Price": f"${market_data['price']:,.2f}",
-                                "Volatility": regime_data.get("volatility", "unknown"),
-                                "Trend": regime_data.get("trend", "unknown"),
-                                "Volume": regime_data.get("volume", "unknown"),
-                                "Strategy": recommended,
-                                "Confidence": f"{new_regime.get('confidence', 0)*100:.0f}%",
-                            }
-                        )
-
-                if signal:
-                    logger.info(f"Trade approved by Portfolio Manager: {signal.action.value} size={signal.size or 'N/A'} {signal.symbol}")
-
-                    # Update regime from signal metadata
-                    if signal.metadata.get("regime"):
-                        self._last_regime = signal.metadata["regime"]
-
-                    # Log signal approval trace
-                    entry_price = signal.price or market_data.get('price', 0)
-                    await self.discord.send_trace(
-                        "Portfolio",
-                        f"Trade APPROVED by Portfolio Manager",
-                        {
-                            "Direction": signal.action.value.upper(),
-                            "Size": f"{signal.size:.4f}" if signal.size else "N/A",
-                            "Entry": f"${entry_price:,.2f}",
-                            "TP": f"${signal.target_price:,.2f}" if signal.target_price else "Not set",
-                            "SL": f"${signal.stop_price:,.2f}" if signal.stop_price else "Not set",
-                            "Confidence": f"{signal.confidence*100:.0f}%" if signal.confidence else "N/A",
-                            "Strategy": signal.strategy or "unknown",
+                        market_data = {
+                            "symbol": symbol,
+                            "price": float(ticker.get("last", 0)),
+                            "bid": float(ticker.get("bestBid", 0)),
+                            "ask": float(ticker.get("bestAsk", 0)),
+                            "volume": float(ticker.get("baseVolume", 0)),
+                            "high_24h": float(ticker.get("high24h", 0)),
+                            "low_24h": float(ticker.get("low24h", 0)),
+                            "change_24h": float(ticker.get("change24h", 0)),
+                            "timestamp": ticker.get("timestamp"),
+                            # OHLCV candle data for proper indicator calculations
+                            "candles_1h": candles_1h,
+                            "candles_4h": candles_4h,
+                            "candles_1d": candles_1d,
+                            # Account info for portfolio manager
+                            "account_info": account_info,
                         }
-                    )
 
-                    # Execute the trade (Discord notification happens on success)
-                    await self._execute_signal(signal, market_data)
+                        # Process through agent orchestrator
+                        signal = await self.orchestrator.process_market_data(market_data)
+
+                        # Get last regime from orchestrator
+                        if self.orchestrator.last_regime:
+                            new_regime = self.orchestrator.last_regime
+                            regime_data = new_regime.get("regime", {})
+                            recommended = new_regime.get("recommended_strategy", "neutral")
+
+                            # Log regime changes to Discord (per-symbol, not every tick)
+                            regime_key = f"{symbol}-{regime_data.get('volatility')}-{regime_data.get('trend')}-{recommended}"
+                            if regime_key != last_regime_log.get(symbol):
+                                last_regime_log[symbol] = regime_key
+                                self._last_regime = regime_data
+
+                                await self.discord.send_trace(
+                                    "Regime",
+                                    f"Market regime detected for {symbol}",
+                                    {
+                                        "Price": f"${market_data['price']:,.2f}",
+                                        "Volatility": regime_data.get("volatility", "unknown"),
+                                        "Trend": regime_data.get("trend", "unknown"),
+                                        "Volume": regime_data.get("volume", "unknown"),
+                                        "Strategy": recommended,
+                                        "Confidence": f"{new_regime.get('confidence', 0)*100:.0f}%",
+                                    }
+                                )
+
+                        if signal:
+                            logger.info(f"Trade approved for {symbol}: {signal.action.value} size={signal.size or 'N/A'}")
+
+                            # Update regime from signal metadata
+                            if signal.metadata.get("regime"):
+                                self._last_regime = signal.metadata["regime"]
+
+                            # Log signal approval trace
+                            entry_price = signal.price or market_data.get('price', 0)
+                            await self.discord.send_trace(
+                                "Portfolio",
+                                f"Trade APPROVED for {symbol}",
+                                {
+                                    "Direction": signal.action.value.upper(),
+                                    "Size": f"{signal.size:.4f}" if signal.size else "N/A",
+                                    "Entry": f"${entry_price:,.2f}",
+                                    "TP": f"${signal.target_price:,.2f}" if signal.target_price else "Not set",
+                                    "SL": f"${signal.stop_price:,.2f}" if signal.stop_price else "Not set",
+                                    "Confidence": f"{signal.confidence*100:.0f}%" if signal.confidence else "N/A",
+                                    "Strategy": signal.strategy or "unknown",
+                                }
+                            )
+
+                            # Execute the trade (Discord notification happens on success)
+                            await self._execute_signal(signal, market_data)
+
+                    except Exception as symbol_error:
+                        logger.warning(f"Error processing {symbol}: {symbol_error}")
+                        continue  # Continue to next symbol
 
                 # Periodic strategy analysis log (every 60 iterations = ~5 minutes)
                 if iteration_count % 60 == 0 and self.orchestrator.last_strategy_analysis:
@@ -637,14 +688,14 @@ class StrategyEngine:
 
                     await self.discord.send_trace(
                         "Strategy Analysis",
-                        f"Strategy scan results for {symbol}",
+                        f"Multi-symbol scan ({len(symbols)} pairs)",
                         {
-                            "Price": f"${market_data['price']:,.2f}",
+                            "Symbols": ", ".join(symbols),
                             **analysis_fields,
                         }
                     )
 
-                # Wait before next iteration
+                # Wait before next iteration (after processing all symbols)
                 await asyncio.sleep(self.settings.main_loop_interval)
 
             except asyncio.CancelledError:

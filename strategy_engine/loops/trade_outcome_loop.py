@@ -44,6 +44,7 @@ class TradeOutcomeLoop:
         judge_agent: JudgeAgent,
         llm_analyzer=None,
         discord=None,
+        trade_journal=None,
     ):
         """Initialize Trade Outcome Loop.
 
@@ -52,11 +53,13 @@ class TradeOutcomeLoop:
             judge_agent: JudgeAgent for scoring
             llm_analyzer: LLM for reflection generation
             discord: Discord notifier
+            trade_journal: TradeJournal for human-readable trade logging
         """
         self.trade_memory = trade_memory
         self.judge_agent = judge_agent
         self.llm = llm_analyzer
         self.discord = discord
+        self.trade_journal = trade_journal
 
         # Track recent outcomes for batch analysis
         self._recent_outcomes: List[TradeRecord] = []
@@ -320,6 +323,13 @@ Provide a 2-3 sentence reflection on:
             reflection: LLM reflection
             lessons: Extracted lessons
         """
+        # Send trade journal exit notification (professional format)
+        if self.trade_journal:
+            try:
+                await self.trade_journal.send_exit_notification(trade)
+            except Exception as e:
+                logger.warning(f"Trade journal exit notification failed: {e}")
+
         if not self.discord:
             return
 

@@ -6,15 +6,20 @@ Architecture (based on research insights):
 - Regime Detector determines whether to use Mean Reversion or Trend Following
 - "Some regimes reward trend following. Others reward mean reversion."
 - Running both strategies across different regimes smooths returns and reduces drawdowns.
+- AlphaGenerator provides signal confirmation via multi-indicator aggregation
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from loguru import logger
 
 from .base import Signal, SignalAction
 from ..agents.base_agent import BaseAgent
 from ai_logging import get_ai_logger
+
+if TYPE_CHECKING:
+    from ..services.alpha_generator import AlphaGenerator
+    from ..services.edge_scanner import EdgeScanner
 
 
 class AgentOrchestrator:
@@ -25,15 +30,24 @@ class AgentOrchestrator:
     2. Routes to appropriate strategy:
        - Mean Reversion (high win rate, fade extremes)
        - Trend Following (low win rate, big winners)
-    3. Risk Manager evaluates and adjusts the proposal
-    4. Execution Agent optimizes order execution
+    3. AlphaGenerator confirms signal direction via indicator aggregation
+    4. EdgeScanner provides additional edge-based confirmation
+    5. Risk Manager evaluates and adjusts the proposal
+    6. Execution Agent optimizes order execution
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        alpha_generator: Optional["AlphaGenerator"] = None,
+        edge_scanner: Optional["EdgeScanner"] = None,
+    ):
         """Initialize orchestrator.
 
         Args:
             config: Orchestrator configuration
+            alpha_generator: Optional AlphaGenerator for signal confirmation
+            edge_scanner: Optional EdgeScanner for edge-based confirmation
         """
         self.config = config
         self.agents: Dict[str, BaseAgent] = {}
@@ -41,6 +55,10 @@ class AgentOrchestrator:
         self._running = False
         self.last_regime = None
         self.last_strategy_analysis = []  # Track strategy analysis for external logging
+        self.alpha_generator = alpha_generator
+        self.edge_scanner = edge_scanner
+        self.last_alpha_signal = None  # Track last alpha signal for logging
+        self.last_edge_signals = []  # Track last edge signals for logging
 
     def register_agent(self, name: str, agent: BaseAgent):
         """Register an agent with the orchestrator.
@@ -108,6 +126,64 @@ class AgentOrchestrator:
         context["strategy_proposal"] = self._convert_signal_to_proposal(strategy_result)
         logger.info(f"Strategy proposal: {context['strategy_proposal']}")
 
+        # Stage 2.5: Alpha Generator Confirmation (boost only, no rejection)
+        if self.alpha_generator:
+            alpha_signal = await self._validate_with_alpha_generator(
+                context["strategy_proposal"], market_data.get("symbol", "BTCUSDT")
+            )
+            context["alpha_confirmation"] = alpha_signal
+            self.last_alpha_signal = alpha_signal
+
+            if alpha_signal:
+                strategy_direction = context["strategy_proposal"].get("action", "hold")
+                alpha_direction = alpha_signal.direction
+
+                # Boost confidence if alpha agrees (no rejection if disagrees)
+                if (strategy_direction == "buy" and alpha_direction == "LONG") or \
+                   (strategy_direction == "sell" and alpha_direction == "SHORT"):
+                    original_confidence = context["strategy_proposal"].get("confidence", 0.5)
+                    boost = min(0.15, abs(alpha_signal.alpha) * 0.2)
+                    context["strategy_proposal"]["confidence"] = min(1.0, original_confidence + boost)
+                    logger.debug(
+                        f"Alpha confirmation boost: {original_confidence:.2f} -> "
+                        f"{context['strategy_proposal']['confidence']:.2f}"
+                    )
+                else:
+                    # Log disagreement but don't reject
+                    logger.debug(
+                        f"Alpha disagrees: Strategy={strategy_direction}, "
+                        f"Alpha={alpha_direction} ({alpha_signal.alpha:+.2f}) - continuing anyway"
+                    )
+
+        # Stage 2.6: Edge Scanner Confirmation (statistical edge validation)
+        if self.edge_scanner:
+            edge_signals = await self._validate_with_edge_scanner(
+                context["strategy_proposal"], market_data.get("symbol", "BTCUSDT")
+            )
+            context["edge_confirmation"] = edge_signals
+            self.last_edge_signals = edge_signals
+
+            if edge_signals:
+                # Check if any edge signal aligns with strategy
+                strategy_direction = context["strategy_proposal"].get("action", "hold")
+
+                for edge_signal in edge_signals:
+                    edge_side = edge_signal.side  # "long" or "short"
+
+                    # Boost confidence if edge agrees with strategy direction
+                    if (strategy_direction == "buy" and edge_side == "long") or \
+                       (strategy_direction == "sell" and edge_side == "short"):
+                        original_confidence = context["strategy_proposal"].get("confidence", 0.5)
+                        # Boost based on edge expectancy (stronger edges = bigger boost)
+                        edge_expectancy = edge_signal.edge.expectancy if edge_signal.edge else 0
+                        boost = min(0.10, edge_expectancy * 0.15)
+                        context["strategy_proposal"]["confidence"] = min(1.0, original_confidence + boost)
+                        logger.debug(
+                            f"Edge confirmation boost ({edge_signal.edge_id}): "
+                            f"{original_confidence:.2f} -> {context['strategy_proposal']['confidence']:.2f}"
+                        )
+                        break  # Only use first matching edge
+
         # Stage 3: Portfolio Management (dynamic confidence threshold)
         # This is the bridge between signals and execution
         if "portfolio_manager" in self.agents:
@@ -163,86 +239,131 @@ class AgentOrchestrator:
         self,
         context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Route to appropriate strategy agent based on detected regime.
+        """Run ALL strategies and pick the best signal.
+
+        Regime is used as a confidence MODIFIER (+20%), not a router.
 
         Args:
             context: Current context with regime information
 
         Returns:
-            Strategy result from the appropriate agent
+            Best strategy result with regime-adjusted confidence
         """
         recommended = context.get("recommended_strategy", "neutral")
+        logger.debug(f"Running ALL strategies (regime hint: {recommended})")
 
-        # Route based on regime recommendation
-        if recommended == "mean_reversion" and "mean_reversion" in self.agents:
-            logger.debug("Routing to Mean Reversion strategy")
-            return await self._run_agent("mean_reversion", context)
+        signals = []
+        strategy_analysis = []  # Track all strategy analysis for logging
 
-        elif recommended == "trend_following" and "trend_following" in self.agents:
-            logger.debug("Routing to Trend Following strategy")
-            return await self._run_agent("trend_following", context)
+        # Strategy name to regime mapping for confidence boost
+        strategy_regime_map = {
+            "mean_reversion": "mean_reversion",
+            "trend_following": "trend_following",
+            "turtle_trading": "turtle_trading",  # Also trend-like
+            "momentum": "trend_following",  # Momentum aligns with trend
+            "pivot": "mean_reversion",  # Pivot bounces align with mean reversion
+            "pattern": "trend_following",  # Breakout patterns align with trend
+        }
 
-        elif recommended == "turtle_trading" and "turtle_trading" in self.agents:
-            logger.debug("Routing to Turtle Trading strategy (20/55-day breakouts)")
-            return await self._run_agent("turtle_trading", context)
+        # Run Mean Reversion
+        if "mean_reversion" in self.agents:
+            mr_result = await self._run_agent("mean_reversion", context)
+            mr_reasoning = mr_result.get("reasoning", "No analysis")
+            strategy_analysis.append(("Mean Reversion", mr_result.get("signal") is not None, mr_reasoning))
+            if mr_result.get("signal"):
+                mr_result["strategy_source"] = "mean_reversion"
+                # Apply regime confidence boost if aligned
+                if recommended == strategy_regime_map.get("mean_reversion"):
+                    mr_result["confidence"] = min(1.0, mr_result.get("confidence", 0.5) * 1.2)
+                    logger.debug("Mean Reversion: +20% regime boost applied")
+                signals.append(mr_result)
+            else:
+                logger.debug(f"Mean Reversion: {mr_reasoning}")
 
-        elif recommended == "neutral":
-            # In neutral regime, check multiple strategies and take the strongest signal
-            logger.debug("Neutral regime - checking all strategies")
+        # Run Trend Following
+        if "trend_following" in self.agents:
+            tf_result = await self._run_agent("trend_following", context)
+            tf_reasoning = tf_result.get("reasoning", "No analysis")
+            strategy_analysis.append(("Trend Following", tf_result.get("signal") is not None, tf_reasoning))
+            if tf_result.get("signal"):
+                tf_result["strategy_source"] = "trend_following"
+                if recommended == strategy_regime_map.get("trend_following"):
+                    tf_result["confidence"] = min(1.0, tf_result.get("confidence", 0.5) * 1.2)
+                    logger.debug("Trend Following: +20% regime boost applied")
+                signals.append(tf_result)
+            else:
+                logger.debug(f"Trend Following: {tf_reasoning}")
 
-            signals = []
-            strategy_analysis = []  # Track all strategy analysis for logging
+        # Run Turtle Trading
+        if "turtle_trading" in self.agents:
+            turtle_result = await self._run_agent("turtle_trading", context)
+            turtle_reasoning = turtle_result.get("reasoning", "No analysis")
+            strategy_analysis.append(("Turtle Trading", turtle_result.get("signal") is not None, turtle_reasoning))
+            if turtle_result.get("signal"):
+                turtle_result["strategy_source"] = "turtle_trading"
+                if recommended in ["turtle_trading", "trend_following"]:
+                    turtle_result["confidence"] = min(1.0, turtle_result.get("confidence", 0.5) * 1.2)
+                    logger.debug("Turtle Trading: +20% regime boost applied")
+                signals.append(turtle_result)
+            else:
+                logger.debug(f"Turtle Trading: {turtle_reasoning}")
 
-            if "mean_reversion" in self.agents:
-                mr_result = await self._run_agent("mean_reversion", context)
-                mr_reasoning = mr_result.get("reasoning", "No analysis")
-                strategy_analysis.append(("Mean Reversion", mr_result.get("signal") is not None, mr_reasoning))
-                if mr_result.get("signal"):
-                    mr_result["strategy_source"] = "mean_reversion"
-                    signals.append(mr_result)
-                else:
-                    logger.info(f"Mean Reversion: {mr_reasoning}")
+        # Run Momentum
+        if "momentum" in self.agents:
+            momentum_result = await self._run_agent("momentum", context)
+            momentum_reasoning = momentum_result.get("reasoning", "No analysis")
+            strategy_analysis.append(("Momentum", momentum_result.get("signal") is not None, momentum_reasoning))
+            if momentum_result.get("signal"):
+                momentum_result["strategy_source"] = "momentum"
+                if recommended == "trend_following":
+                    momentum_result["confidence"] = min(1.0, momentum_result.get("confidence", 0.5) * 1.2)
+                    logger.debug("Momentum: +20% regime boost applied")
+                signals.append(momentum_result)
+            else:
+                logger.debug(f"Momentum: {momentum_reasoning}")
 
-            if "trend_following" in self.agents:
-                tf_result = await self._run_agent("trend_following", context)
-                tf_reasoning = tf_result.get("reasoning", "No analysis")
-                strategy_analysis.append(("Trend Following", tf_result.get("signal") is not None, tf_reasoning))
-                if tf_result.get("signal"):
-                    tf_result["strategy_source"] = "trend_following"
-                    signals.append(tf_result)
-                else:
-                    logger.info(f"Trend Following: {tf_reasoning}")
+        # Run Pivot
+        if "pivot" in self.agents:
+            pivot_result = await self._run_agent("pivot", context)
+            pivot_reasoning = pivot_result.get("reasoning", "No analysis")
+            strategy_analysis.append(("Pivot", pivot_result.get("signal") is not None, pivot_reasoning))
+            if pivot_result.get("signal"):
+                pivot_result["strategy_source"] = "pivot"
+                if recommended == "mean_reversion":
+                    pivot_result["confidence"] = min(1.0, pivot_result.get("confidence", 0.5) * 1.2)
+                    logger.debug("Pivot: +20% regime boost applied")
+                signals.append(pivot_result)
+            else:
+                logger.debug(f"Pivot: {pivot_reasoning}")
 
-            # Also check Turtle Trading for breakout opportunities
-            if "turtle_trading" in self.agents:
-                turtle_result = await self._run_agent("turtle_trading", context)
-                turtle_reasoning = turtle_result.get("reasoning", "No analysis")
-                strategy_analysis.append(("Turtle Trading", turtle_result.get("signal") is not None, turtle_reasoning))
-                if turtle_result.get("signal"):
-                    turtle_result["strategy_source"] = "turtle_trading"
-                    signals.append(turtle_result)
-                else:
-                    logger.info(f"Turtle Trading: {turtle_reasoning}")
+        # Run Pattern
+        if "pattern" in self.agents:
+            pattern_result = await self._run_agent("pattern", context)
+            pattern_reasoning = pattern_result.get("reasoning", "No analysis")
+            strategy_analysis.append(("Pattern", pattern_result.get("signal") is not None, pattern_reasoning))
+            if pattern_result.get("signal"):
+                pattern_result["strategy_source"] = "pattern"
+                if recommended == "trend_following":
+                    pattern_result["confidence"] = min(1.0, pattern_result.get("confidence", 0.5) * 1.2)
+                    logger.debug("Pattern: +20% regime boost applied")
+                signals.append(pattern_result)
+            else:
+                logger.debug(f"Pattern: {pattern_reasoning}")
 
-            # Store analysis for external access
-            self.last_strategy_analysis = strategy_analysis
+        # Store analysis for external access
+        self.last_strategy_analysis = strategy_analysis
 
-            # Return strongest signal (by confidence or position size)
-            if signals:
-                best = max(signals, key=lambda s: (
-                    s.get("confidence", 0),
-                    s.get("signal", {}).get("position_size_pct", 0)
-                ))
-                logger.debug(f"Best signal in neutral regime: {best.get('strategy_source')} "
-                           f"(confidence: {best.get('confidence', 0):.2f})")
-                return best
+        # Return strongest signal (by confidence or position size)
+        if signals:
+            best = max(signals, key=lambda s: (
+                s.get("confidence", 0),
+                s.get("signal", {}).get("position_size_pct", 0)
+            ))
+            logger.info(f"Best signal: {best.get('strategy_source')} "
+                       f"(confidence: {best.get('confidence', 0):.2f})")
+            return best
 
-            return None
-
-        # Fallback to legacy strategy_generator if no new agents
-        elif "strategy_generator" in self.agents:
-            return await self._run_agent("strategy_generator", context)
-
+        logger.debug("No signals from any strategy")
         return None
 
     def _convert_signal_to_proposal(
@@ -363,6 +484,7 @@ class AgentOrchestrator:
                 "risk_assessment": context.get("risk_assessment"),
                 "execution_plan": context.get("execution_plan"),
                 "regime": context.get("regime", {}),
+                "alpha_confirmation": self._serialize_alpha_signal(context.get("alpha_confirmation")),
             },
         )
 
@@ -395,6 +517,106 @@ class AgentOrchestrator:
 
         explanation = " | ".join(parts)
         return explanation[:1000]  # Max 1000 chars for WEEX
+
+    def _serialize_alpha_signal(self, alpha_signal) -> Optional[Dict[str, Any]]:
+        """Serialize AlphaSignal for metadata storage.
+
+        Args:
+            alpha_signal: AlphaSignal object or None
+
+        Returns:
+            Dictionary representation or None
+        """
+        if not alpha_signal:
+            return None
+
+        return {
+            "direction": alpha_signal.direction,
+            "alpha": alpha_signal.alpha,
+            "confidence": alpha_signal.confidence,
+            "components": alpha_signal.components,
+            "timeframe_alignment": alpha_signal.timeframe_alignment,
+            "active_patterns": alpha_signal.active_patterns[:5],
+        }
+
+    async def _validate_with_alpha_generator(
+        self,
+        proposal: Dict[str, Any],
+        symbol: str,
+    ):
+        """Validate strategy signal with AlphaGenerator.
+
+        Uses multi-indicator aggregation to confirm or reject signals.
+
+        Args:
+            proposal: Strategy proposal
+            symbol: Trading symbol
+
+        Returns:
+            AlphaSignal or None
+        """
+        if not self.alpha_generator:
+            return None
+
+        try:
+            alpha_signal = await self.alpha_generator.generate_alpha(symbol)
+
+            # Log alpha details
+            logger.debug(
+                f"Alpha signal: direction={alpha_signal.direction}, "
+                f"alpha={alpha_signal.alpha:+.2f}, "
+                f"confidence={alpha_signal.confidence:.2f}, "
+                f"patterns={alpha_signal.active_patterns[:3]}"
+            )
+
+            # Log component breakdown
+            logger.debug(f"Alpha components: {alpha_signal.components}")
+            logger.debug(f"Timeframe alignment: {alpha_signal.timeframe_alignment}")
+
+            return alpha_signal
+
+        except Exception as e:
+            logger.warning(f"AlphaGenerator validation failed: {e}")
+            return None
+
+    async def _validate_with_edge_scanner(
+        self,
+        proposal: Dict[str, Any],
+        symbol: str,
+    ):
+        """Validate strategy signal with EdgeScanner.
+
+        Scans for active edge signals that align with the strategy.
+
+        Args:
+            proposal: Strategy proposal
+            symbol: Trading symbol
+
+        Returns:
+            List of EdgeSignal objects or empty list
+        """
+        if not self.edge_scanner:
+            return []
+
+        try:
+            # Scan for edge signals on this symbol
+            edge_signals = await self.edge_scanner.scan_symbol_edges(symbol)
+
+            if edge_signals:
+                # Log edge details
+                for signal in edge_signals[:3]:  # Log first 3
+                    logger.debug(
+                        f"Edge signal: edge_id={signal.edge_id}, "
+                        f"side={signal.side}, "
+                        f"price={signal.price:,.2f}, "
+                        f"expectancy={signal.edge.expectancy:.2f}" if signal.edge else ""
+                    )
+
+            return edge_signals
+
+        except Exception as e:
+            logger.warning(f"EdgeScanner validation failed: {e}")
+            return []
 
     async def start(self):
         """Start all agents."""

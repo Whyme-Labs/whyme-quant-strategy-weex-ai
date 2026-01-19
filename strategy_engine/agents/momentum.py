@@ -9,13 +9,18 @@ Based on research insights:
 - Key: Trade WITH momentum, not against it
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass
 import numpy as np
+import pandas as pd
 
 from .base_agent import BaseAgent
 from ai_logging import get_ai_logger, STAGE_STRATEGY_GENERATION
+
+if TYPE_CHECKING:
+    from ..services.indicators_service import IndicatorsService
+    from ..services.market_data_service import MarketDataService
 
 
 class MomentumType(Enum):
@@ -61,7 +66,12 @@ class MomentumAgent(BaseAgent):
     - Volume declining while price stalls
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        indicators_service: Optional["IndicatorsService"] = None,
+        market_data_service: Optional["MarketDataService"] = None,
+    ):
         """Initialize momentum agent.
 
         Args:
@@ -74,6 +84,9 @@ class MomentumAgent(BaseAgent):
                 - macd_slow: MACD slow period (default 26)
                 - macd_signal: MACD signal period (default 9)
                 - max_position_pct: Maximum position (default 0.08)
+                - timeframe: Candle timeframe (default "1h")
+            indicators_service: Centralized indicator service
+            market_data_service: Market data service for candles
         """
         super().__init__(config)
         self.roc_period = config.get("roc_period", 14)
@@ -86,6 +99,11 @@ class MomentumAgent(BaseAgent):
         self.max_position_pct = config.get("max_position_pct", 0.08)
         self.atr_period = config.get("atr_period", 14)
         self.atr_multiplier = config.get("atr_multiplier", 2.0)
+        self.timeframe = config.get("timeframe", "1h")
+
+        # Service dependencies
+        self.indicators_service = indicators_service
+        self.market_data_service = market_data_service
 
         self.price_history: List[float] = []
         self.high_history: List[float] = []
@@ -180,8 +198,10 @@ class MomentumAgent(BaseAgent):
                     "target_price": signal.target_price,
                     "position_size_pct": signal.position_size_pct,
                     "momentum_score": signal.momentum_score,
+                    "timeframe": "1h",  # Momentum uses 1H candles
                 },
                 "reasoning": signal.reasoning,
+                "confidence": min(1.0, signal.momentum_score / 70),  # Convert score to confidence
             }
         else:
             return {

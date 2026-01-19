@@ -8,15 +8,21 @@ Based on research insights:
 
 IMPORTANT: RSI and Bollinger Bands are noisy on small timeframes.
 This agent uses higher timeframe confirmation (4H/Daily equivalent) to filter signals.
+
+Now uses centralized IndicatorsService for consistent indicator calculations.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass
-import numpy as np
+import pandas as pd
 
 from .base_agent import BaseAgent
 from ai_logging import get_ai_logger, STAGE_STRATEGY_GENERATION
+
+if TYPE_CHECKING:
+    from ..services.indicators_service import IndicatorsService
+    from ..services.market_data_service import MarketDataService
 
 
 class SignalStrength(Enum):
@@ -58,47 +64,49 @@ class MeanReversionAgent(BaseAgent):
     - First green candle (for shorts) / first red candle (for longs)
     - Return to mean (20 EMA)
     - Fixed percentage bounce (e.g., 5%)
+
+    Uses IndicatorsService for:
+    - Bollinger Bands (bb_upper, bb_mid, bb_lower, bb_pct)
+    - RSI (rsi)
+    - Stochastic (stoch_k, stoch_d) for confirmation
+    - ATR for stop loss calculation
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        indicators_service: Optional["IndicatorsService"] = None,
+        market_data_service: Optional["MarketDataService"] = None,
+    ):
         """Initialize mean reversion agent.
 
         Args:
             config: Configuration with:
-                - bb_period: Bollinger Band period (default 20)
-                - bb_std: Bollinger Band standard deviations (default 2)
-                - rsi_period: RSI period (default 14)
                 - rsi_oversold: RSI oversold threshold (default 30)
                 - rsi_overbought: RSI overbought threshold (default 70)
                 - max_position_pct: Maximum position as % of account (default 0.05)
                 - target_return_pct: Target return per trade (default 0.02)
-                - htf_multiplier: Higher timeframe multiplier for noise filtering (default 4)
-                - min_htf_periods: Minimum higher timeframe periods needed (default 20)
+                - stop_loss_pct: Stop loss percentage (default 0.02)
+                - timeframe: Candle timeframe (default "4h")
+            indicators_service: Centralized indicator service
+            market_data_service: Market data service for candles
         """
         super().__init__(config)
-        self.bb_period = config.get("bb_period", 20)
-        self.bb_std = config.get("bb_std", 2.0)
-        self.rsi_period = config.get("rsi_period", 14)
         self.rsi_oversold = config.get("rsi_oversold", 30)
         self.rsi_overbought = config.get("rsi_overbought", 70)
         self.max_position_pct = config.get("max_position_pct", 0.05)
-        self.target_return_pct = config.get("target_return_pct", 0.02)  # 2% target
+        self.target_return_pct = config.get("target_return_pct", 0.02)
+        self.stop_loss_pct = config.get("stop_loss_pct", 0.02)
+        self.timeframe = config.get("timeframe", "4h")
 
-        # Multi-timeframe settings (reduces noise)
-        # htf_multiplier=4 means if base is 1H, HTF is 4H
-        self.htf_multiplier = config.get("htf_multiplier", 4)
-        self.min_htf_periods = config.get("min_htf_periods", 20)
-
-        self.price_history: List[float] = []
-        self.htf_price_history: List[float] = []  # Higher timeframe prices
-        self._htf_counter = 0  # Counter for HTF aggregation
+        # Service dependencies
+        self.indicators_service = indicators_service
+        self.market_data_service = market_data_service
 
     async def process(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Process market data and generate mean reversion signals.
 
-        Uses multi-timeframe analysis:
-        - Lower timeframe: Entry timing
-        - Higher timeframe: Signal confirmation (reduces noise)
+        Uses IndicatorsService for indicator calculations.
 
         Args:
             context: Dictionary containing:
@@ -110,51 +118,41 @@ class MeanReversionAgent(BaseAgent):
         """
         market_data = context.get("market_data", {})
         regime = context.get("regime", {})
-
+        symbol = market_data.get("symbol", "BTCUSDT")
         current_price = market_data.get("price", 0)
 
-        # Use OHLCV candle data for proper calculations (prefer 4h for mean reversion)
-        candles = market_data.get("candles_4h") or market_data.get("candles_1h") or []
+        # Get indicators from service or calculate from candle data
+        indicators = await self._get_indicators(symbol, market_data)
 
-        if candles and len(candles) >= self.min_htf_periods:
-            # Extract close prices from candles for HTF analysis
-            self.htf_price_history = [float(c.get("close", 0)) for c in candles]
-            self.price_history = self.htf_price_history.copy()
-        else:
-            # Fallback: build history from ticks (less accurate)
-            if current_price > 0:
-                self.price_history.append(current_price)
-                if len(self.price_history) > 200:
-                    self.price_history = self.price_history[-200:]
-
-                # Aggregate to higher timeframe (e.g., every 4 candles = 4H if base is 1H)
-                self._htf_counter += 1
-                if self._htf_counter >= self.htf_multiplier:
-                    self.htf_price_history.append(current_price)
-                    self._htf_counter = 0
-                    if len(self.htf_price_history) > 100:
-                        self.htf_price_history = self.htf_price_history[-100:]
-
-        # Check if we have enough data (need HTF data for confirmation)
-        if len(self.htf_price_history) < self.min_htf_periods:
+        if not indicators:
             return {
                 "signal": None,
-                "reasoning": f"Building HTF data: {len(self.htf_price_history)}/{self.min_htf_periods} periods. Need {self.min_htf_periods} candles for RSI/BB."
+                "reasoning": f"Unable to calculate indicators for {self.timeframe} timeframe"
             }
 
-        # Generate signal with HTF confirmation
-        signal = self._generate_signal(current_price, regime)
+        # Check for required indicators
+        required = ["rsi", "bb_upper", "bb_mid", "bb_lower"]
+        missing = [ind for ind in required if ind not in indicators or indicators[ind] is None]
+        if missing:
+            return {
+                "signal": None,
+                "reasoning": f"Missing required indicators: {missing}"
+            }
+
+        # Generate signal
+        signal = self._generate_signal(current_price, indicators, regime)
 
         # Log AI decision
         ai_logger = get_ai_logger()
         await ai_logger.log_decision(
             stage=STAGE_STRATEGY_GENERATION,
-            model="mean_reversion_v1",
+            model="mean_reversion_v2",
             input_data={
                 "price": current_price,
+                "rsi": indicators.get("rsi"),
+                "bb_pct": indicators.get("bb_pct"),
+                "stoch_k": indicators.get("stoch_k"),
                 "regime": regime,
-                "bb_period": self.bb_period,
-                "rsi_period": self.rsi_period,
             },
             output_data={
                 "signal_direction": signal.direction if signal else None,
@@ -174,9 +172,10 @@ class MeanReversionAgent(BaseAgent):
                     "target_price": signal.target_price,
                     "stop_price": signal.stop_price,
                     "position_size_pct": signal.position_size_pct,
-                    "timeframe": "4h",  # Mean reversion uses 4H candles
+                    "timeframe": self.timeframe,
                 },
                 "reasoning": signal.reasoning,
+                "confidence": 0.7 if signal.strength == SignalStrength.STRONG else 0.5,
             }
         else:
             return {
@@ -184,121 +183,199 @@ class MeanReversionAgent(BaseAgent):
                 "reasoning": signal.reasoning if signal else "No signal"
             }
 
+    async def _get_indicators(
+        self,
+        symbol: str,
+        market_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Get indicators from IndicatorsService or calculate from candles.
+
+        Args:
+            symbol: Trading symbol
+            market_data: Market data with candles
+
+        Returns:
+            Dictionary of indicator values
+        """
+        # Method 1: Use IndicatorsService if available
+        if self.indicators_service and self.market_data_service:
+            try:
+                indicators = await self.indicators_service.calculate_indicators(
+                    symbol, self.timeframe, limit=100
+                )
+                if indicators:
+                    return indicators
+            except Exception:
+                pass
+
+        # Method 2: Calculate from candle data in context
+        candle_key = f"candles_{self.timeframe}"
+        candles = market_data.get(candle_key) or market_data.get("candles_4h") or []
+
+        if not candles or len(candles) < 20:
+            return {}
+
+        # Convert to DataFrame
+        df = pd.DataFrame(candles)
+
+        # Ensure required columns
+        required_cols = ["open", "high", "low", "close", "volume"]
+        for col in required_cols:
+            if col not in df.columns:
+                return {}
+
+        # Calculate indicators using IndicatorsService if available
+        if self.indicators_service:
+            df = self.indicators_service.calculate_all(df)
+        else:
+            # Fallback: manual calculation
+            df = self._calculate_indicators_fallback(df)
+
+        if df.empty:
+            return {}
+
+        # Return latest values
+        latest = df.iloc[-1]
+        return {
+            "rsi": latest.get("rsi"),
+            "bb_upper": latest.get("bb_upper"),
+            "bb_mid": latest.get("bb_mid"),
+            "bb_lower": latest.get("bb_lower"),
+            "bb_pct": latest.get("bb_pct"),
+            "stoch_k": latest.get("stoch_k"),
+            "stoch_d": latest.get("stoch_d"),
+            "atr": latest.get("atr"),
+            "close": latest.get("close"),
+        }
+
+    def _calculate_indicators_fallback(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fallback indicator calculation when IndicatorsService unavailable.
+
+        Args:
+            df: OHLCV DataFrame
+
+        Returns:
+            DataFrame with indicators added
+        """
+        close = df["close"]
+
+        # RSI
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        df["rsi"] = 100 - (100 / (1 + rs))
+
+        # Bollinger Bands
+        sma = close.rolling(20).mean()
+        std = close.rolling(20).std()
+        df["bb_upper"] = sma + (std * 2)
+        df["bb_mid"] = sma
+        df["bb_lower"] = sma - (std * 2)
+        df["bb_pct"] = (close - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
+
+        # ATR
+        high = df["high"]
+        low = df["low"]
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        df["atr"] = tr.rolling(14).mean()
+
+        return df
+
     def _generate_signal(
         self,
         current_price: float,
+        indicators: Dict[str, Any],
         regime: Dict[str, Any],
     ) -> Optional[MeanReversionSignal]:
         """Generate mean reversion trading signal.
 
         Args:
             current_price: Current market price
+            indicators: Pre-calculated indicators
             regime: Current market regime
 
         Returns:
             MeanReversionSignal or None
         """
-        prices = np.array(self.price_history)
-
-        # Calculate indicators
-        bb_upper, bb_middle, bb_lower = self._calculate_bollinger_bands(prices)
-        rsi = self._calculate_rsi(prices)
+        rsi = indicators.get("rsi", 50)
+        bb_upper = indicators.get("bb_upper", current_price)
+        bb_mid = indicators.get("bb_mid", current_price)
+        bb_lower = indicators.get("bb_lower", current_price)
+        bb_pct = indicators.get("bb_pct", 0.5)
+        stoch_k = indicators.get("stoch_k")
+        atr = indicators.get("atr", current_price * 0.02)
 
         # Calculate deviation from mean
-        deviation_pct = (current_price - bb_middle) / bb_middle * 100
+        deviation_pct = (current_price - bb_mid) / bb_mid * 100 if bb_mid > 0 else 0
 
         reasoning_parts = []
 
         # Check for oversold conditions (long signal)
-        oversold_bb = current_price < bb_lower
+        oversold_bb = current_price < bb_lower or bb_pct < 0
         oversold_rsi = rsi < self.rsi_oversold
+        oversold_stoch = stoch_k is not None and stoch_k < 20
 
         # Check for overbought conditions (short signal)
-        overbought_bb = current_price > bb_upper
+        overbought_bb = current_price > bb_upper or bb_pct > 1
         overbought_rsi = rsi > self.rsi_overbought
+        overbought_stoch = stoch_k is not None and stoch_k > 80
+
+        # Count confirmations
+        long_confirmations = sum([oversold_bb, oversold_rsi, oversold_stoch])
+        short_confirmations = sum([overbought_bb, overbought_rsi, overbought_stoch])
+
+        # Calculate stop loss using ATR
+        atr_stop_mult = 2.0
+        stop_distance = atr * atr_stop_mult if atr else current_price * self.stop_loss_pct
 
         # Determine signal
-        if oversold_bb and oversold_rsi:
-            # Strong long signal
-            reasoning_parts.append(
-                f"Price below lower BB ({current_price:.2f} < {bb_lower:.2f})"
-            )
-            reasoning_parts.append(f"RSI oversold ({rsi:.1f} < {self.rsi_oversold})")
-
-            # Calculate stop loss: 2% below entry for longs
-            stop_price = current_price * 0.98
-
-            signal = MeanReversionSignal(
-                direction="long",
-                strength=SignalStrength.STRONG,
-                entry_price=current_price,
-                target_price=bb_middle,  # Target mean
-                stop_price=stop_price,  # 2% stop loss
-                position_size_pct=self.max_position_pct * 0.8,  # 80% of max
-                reasoning=". ".join(reasoning_parts) + ". Strong mean reversion long setup."
-            )
-            return signal
-
-        elif oversold_bb or oversold_rsi:
-            # Moderate long signal
+        if long_confirmations >= 2:
+            # Strong or moderate long signal
             if oversold_bb:
-                reasoning_parts.append(f"Price at lower BB ({deviation_pct:.1f}% below mean)")
+                reasoning_parts.append(f"Price below lower BB (${current_price:,.2f} < ${bb_lower:,.2f})")
             if oversold_rsi:
-                reasoning_parts.append(f"RSI approaching oversold ({rsi:.1f})")
+                reasoning_parts.append(f"RSI oversold ({rsi:.1f} < {self.rsi_oversold})")
+            if oversold_stoch:
+                reasoning_parts.append(f"Stochastic oversold ({stoch_k:.1f})")
 
-            # Calculate stop loss: 2% below entry for longs
-            stop_price = current_price * 0.98
+            strength = SignalStrength.STRONG if long_confirmations >= 3 else SignalStrength.MODERATE
+            position_mult = 0.8 if strength == SignalStrength.STRONG else 0.5
 
             signal = MeanReversionSignal(
                 direction="long",
-                strength=SignalStrength.MODERATE,
+                strength=strength,
                 entry_price=current_price,
-                target_price=bb_middle,
-                stop_price=stop_price,  # 2% stop loss
-                position_size_pct=self.max_position_pct * 0.5,  # 50% of max
-                reasoning=". ".join(reasoning_parts) + ". Moderate mean reversion long."
+                target_price=bb_mid,
+                stop_price=current_price - stop_distance,
+                position_size_pct=self.max_position_pct * position_mult,
+                reasoning=". ".join(reasoning_parts) + f". {strength.value.title()} mean reversion long setup."
             )
             return signal
 
-        elif overbought_bb and overbought_rsi:
-            # Strong short signal
-            reasoning_parts.append(
-                f"Price above upper BB ({current_price:.2f} > {bb_upper:.2f})"
-            )
-            reasoning_parts.append(f"RSI overbought ({rsi:.1f} > {self.rsi_overbought})")
-
-            # Calculate stop loss: 2% above entry for shorts
-            stop_price = current_price * 1.02
-
-            signal = MeanReversionSignal(
-                direction="short",
-                strength=SignalStrength.STRONG,
-                entry_price=current_price,
-                target_price=bb_middle,
-                stop_price=stop_price,  # 2% stop loss
-                position_size_pct=self.max_position_pct * 0.6,  # More conservative for shorts
-                reasoning=". ".join(reasoning_parts) + ". Strong mean reversion short setup."
-            )
-            return signal
-
-        elif overbought_bb or overbought_rsi:
-            # Moderate short signal
+        elif short_confirmations >= 2:
+            # Strong or moderate short signal
             if overbought_bb:
-                reasoning_parts.append(f"Price at upper BB ({deviation_pct:.1f}% above mean)")
+                reasoning_parts.append(f"Price above upper BB (${current_price:,.2f} > ${bb_upper:,.2f})")
             if overbought_rsi:
-                reasoning_parts.append(f"RSI approaching overbought ({rsi:.1f})")
+                reasoning_parts.append(f"RSI overbought ({rsi:.1f} > {self.rsi_overbought})")
+            if overbought_stoch:
+                reasoning_parts.append(f"Stochastic overbought ({stoch_k:.1f})")
 
-            # Calculate stop loss: 2% above entry for shorts
-            stop_price = current_price * 1.02
+            strength = SignalStrength.STRONG if short_confirmations >= 3 else SignalStrength.MODERATE
+            position_mult = 0.6 if strength == SignalStrength.STRONG else 0.3  # More conservative for shorts
 
             signal = MeanReversionSignal(
                 direction="short",
-                strength=SignalStrength.MODERATE,
+                strength=strength,
                 entry_price=current_price,
-                target_price=bb_middle,
-                stop_price=stop_price,  # 2% stop loss
-                position_size_pct=self.max_position_pct * 0.3,  # Conservative
-                reasoning=". ".join(reasoning_parts) + ". Moderate mean reversion short."
+                target_price=bb_mid,
+                stop_price=current_price + stop_distance,
+                position_size_pct=self.max_position_pct * position_mult,
+                reasoning=". ".join(reasoning_parts) + f". {strength.value.title()} mean reversion short setup."
             )
             return signal
 
@@ -308,63 +385,8 @@ class MeanReversionAgent(BaseAgent):
                 direction="none",
                 strength=SignalStrength.NONE,
                 entry_price=current_price,
-                target_price=bb_middle,
+                target_price=bb_mid,
                 stop_price=None,
                 position_size_pct=0,
-                reasoning=f"Price within normal range. RSI: {rsi:.1f}, Deviation: {deviation_pct:.1f}%"
+                reasoning=f"Price within normal range. RSI: {rsi:.1f}, BB%: {bb_pct:.2f}, Deviation: {deviation_pct:.1f}%"
             )
-
-    def _calculate_bollinger_bands(
-        self,
-        prices: np.ndarray
-    ) -> tuple[float, float, float]:
-        """Calculate Bollinger Bands.
-
-        Args:
-            prices: Price array
-
-        Returns:
-            Tuple of (upper_band, middle_band, lower_band)
-        """
-        if len(prices) < self.bb_period:
-            mean = np.mean(prices)
-            std = np.std(prices)
-        else:
-            mean = np.mean(prices[-self.bb_period:])
-            std = np.std(prices[-self.bb_period:])
-
-        upper = mean + (self.bb_std * std)
-        lower = mean - (self.bb_std * std)
-
-        return upper, mean, lower
-
-    def _calculate_rsi(self, prices: np.ndarray) -> float:
-        """Calculate Relative Strength Index.
-
-        Args:
-            prices: Price array
-
-        Returns:
-            RSI value (0-100)
-        """
-        if len(prices) < self.rsi_period + 1:
-            return 50.0  # Neutral
-
-        # Calculate price changes
-        deltas = np.diff(prices[-self.rsi_period - 1:])
-
-        # Separate gains and losses
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
-
-        # Calculate average gains and losses
-        avg_gain = np.mean(gains)
-        avg_loss = np.mean(losses)
-
-        if avg_loss == 0:
-            return 100.0
-
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-
-        return rsi

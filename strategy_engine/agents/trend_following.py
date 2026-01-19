@@ -9,13 +9,18 @@ Based on research insights:
 - Strict stop-losses protect against reversals
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass
 import numpy as np
+import pandas as pd
 
 from .base_agent import BaseAgent
 from ai_logging import get_ai_logger, STAGE_STRATEGY_GENERATION
+
+if TYPE_CHECKING:
+    from ..services.indicators_service import IndicatorsService
+    from ..services.market_data_service import MarketDataService
 
 
 class BreakoutType(Enum):
@@ -60,7 +65,12 @@ class TrendFollowingAgent(BaseAgent):
     - Exit only when trend clearly reverses
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        indicators_service: Optional["IndicatorsService"] = None,
+        market_data_service: Optional["MarketDataService"] = None,
+    ):
         """Initialize trend following agent.
 
         Args:
@@ -71,6 +81,9 @@ class TrendFollowingAgent(BaseAgent):
                 - atr_multiplier: Stop distance in ATRs (default 2)
                 - max_position_pct: Maximum position (default 0.1)
                 - vcp_min_candles: Minimum candles for VCP (default 7)
+                - timeframe: Candle timeframe (default "4h")
+            indicators_service: Centralized indicator service
+            market_data_service: Market data service for candles
         """
         super().__init__(config)
         self.channel_period = config.get("channel_period", 20)
@@ -79,6 +92,11 @@ class TrendFollowingAgent(BaseAgent):
         self.atr_multiplier = config.get("atr_multiplier", 2.0)
         self.max_position_pct = config.get("max_position_pct", 0.1)
         self.vcp_min_candles = config.get("vcp_min_candles", 7)
+        self.timeframe = config.get("timeframe", "4h")
+
+        # Service dependencies
+        self.indicators_service = indicators_service
+        self.market_data_service = market_data_service
 
         self.price_history: List[float] = []
         self.high_history: List[float] = []

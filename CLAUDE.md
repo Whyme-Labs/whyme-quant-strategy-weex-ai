@@ -4,7 +4,14 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-WEEX AI Strategy Engine - A multi-agent AI trading system for the WEEX AI Wars Hackathon. Uses regime-based strategy switching between Mean Reversion and Trend Following approaches.
+WEEX AI Strategy Engine - A multi-agent AI trading system for the WEEX AI Wars Hackathon. Runs **ALL 6 strategies in parallel** across **5 trading pairs** (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT):
+
+- **Mean Reversion** (4H) - RSI/BB extremes
+- **Trend Following** (4H) - VCP patterns, EMA alignment
+- **Turtle Trading** (1D) - 20/55-day breakouts
+- **Momentum** (1H) - ROC/MACD/Volume signals
+- **Pivot** (1D) - Support/resistance levels
+- **Pattern** (4H) - Chart patterns (H&S, flags, wedges, triangles)
 
 **Hackathon:** WEEX AI Wars ($1.88M prize pool)
 **Deadline:** January 18, 2026
@@ -65,6 +72,9 @@ WEEX_API_KEY=your-api-key
 WEEX_SECRET_KEY=your-secret-key
 WEEX_PASSPHRASE=your-passphrase
 WEEX_API_URL=https://api.weex.com
+
+# Optional: Override trading symbols (default: BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT)
+TRADING_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
 ```
 
 ## Architecture
@@ -100,30 +110,139 @@ WEEX_API_URL=https://api.weex.com
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                    Signal Confirmation Layer                         │    │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐   │    │
+│  │  │  AlphaGenerator  │  │   EdgeScanner    │  │  TradeJournal   │   │    │
+│  │  │ (Multi-TF Agg.)  │  │ (Edge Confirm.)  │  │ (Trade Logging) │   │    │
+│  │  └──────────────────┘  └──────────────────┘  └─────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                    Existing Trading Pipeline                         │    │
-│  │  RegimeDetector → Strategies → PortfolioMgr → RiskMgr → Execution   │    │
+│  │  RegimeDetector → Strategies → Alpha/Edge → Portfolio → Risk → Exec │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Services Layer
 
+**Core Services:**
 1. **RedisClient** - Cache persistence for candle data and trade memory
 2. **MarketDataService** - Multi-timeframe OHLCV (1H, 4H, 1D) with auto-refresh
-3. **IndicatorsService** - Technical indicators (EMA, RSI, BB, ATR)
-4. **PatternDetector** - Chart patterns (Head & Shoulders, VCP, Double Top/Bottom)
-5. **AlphaGenerator** - Multi-timeframe signal aggregation
+3. **IndicatorsService** - Technical indicators (50+ via pandas-ta: EMA, RSI, BB, ATR, MACD, Stochastic, etc.)
+4. **PatternDetector** - Chart patterns (11 patterns: Head & Shoulders, VCP, Double Top/Bottom, Flags, Wedges, Triangles)
+5. **AlphaGenerator** - Multi-timeframe signal aggregation with component weights
 6. **TradeMemoryService** - Triple memory system (Episodic, Semantic, Procedural)
+
+**Signal Confirmation Services (Integrated in Orchestrator):**
+7. **AlphaGenerator** - Used as signal confirmation (boosts confidence if aligned, rejects if strongly disagrees)
+8. **EdgeScanner** - Statistical edge confirmation (scans 12 edge types: mean reversion, trend, turtle, momentum, MACD, stochastic, ichimoku, supertrend, volume, patterns)
+
+**Trade Logging Services:**
+9. **TradeJournal** - Human-readable trade logging with entry/exit notifications and daily summaries
+10. **AILogUploader** - WEEX hackathon requirement for AI log uploads
+
+**Edge System (Statistical Edge Collection):**
+11. **EdgeRegistry** - Registers and manages statistical edges
+12. **KellySizer** - Position sizing using fractional Kelly criterion (25%)
+13. **PerformanceTracker** - Tracks edge performance and health
 
 ### Trading Agents
 
 1. **Regime Detector** - Classifies market into volatility/trend/volume regimes
-2. **Mean Reversion Agent** - Fades extremes (RSI/BB on 4H timeframe)
-3. **Trend Following Agent** - Rides trends (VCP, EMA alignment)
-4. **Turtle Trading Agent** - Classic 20/55-day breakouts on daily candles
-5. **Portfolio Manager** - Dynamic confidence threshold gatekeeper
-6. **Risk Manager** - Position sizing and leverage checks
-7. **Execution Agent** - Order optimization and AI log recording
+2. **Mean Reversion Agent** - Fades extremes (RSI/BB on **4H** timeframe)
+3. **Trend Following Agent** - Rides trends (VCP, EMA alignment on **4H**)
+4. **Turtle Trading Agent** - Classic 20/55-day breakouts on **1D** candles
+5. **Momentum Agent** - Trades price momentum (ROC, RSI, MACD, Volume surge on **1H**)
+6. **Pivot Agent** - Support/resistance bounces and breakouts (uses **1D** OHLC for pivot calculation)
+7. **Pattern Agent** - Classical chart patterns (H&S, flags, wedges, triangles on **4H**)
+8. **Portfolio Manager** - Dynamic confidence threshold gatekeeper (prevents duplicate trades per symbol)
+9. **Risk Manager** - Position sizing and leverage checks
+10. **Execution Agent** - Order optimization and AI log recording
+
+### Strategy Timeframes
+
+| Strategy | Timeframe | Description |
+|----------|-----------|-------------|
+| Mean Reversion | 4H | RSI oversold/overbought + Bollinger Band extremes |
+| Trend Following | 4H | VCP patterns, EMA alignment, channel breakouts |
+| Turtle Trading | 1D | Classic 20/55-day Donchian channel breakouts |
+| Momentum | 1H | ROC breakouts, RSI momentum, MACD crossovers, volume surges |
+| Pivot | 1D | Daily pivot point support/resistance bounces and breakouts |
+| Pattern | 4H | Chart patterns with measured move targets (see below) |
+
+### Chart Patterns Detected
+
+The Pattern Agent uses `PatternDetector` service to identify classical chart patterns:
+
+**Reversal Patterns:**
+- Head and Shoulders (bearish)
+- Inverse Head and Shoulders (bullish)
+- Double Top (bearish)
+- Double Bottom (bullish)
+- Rising Wedge (bearish)
+- Falling Wedge (bullish)
+
+**Continuation Patterns:**
+- Bull Flag
+- Bear Flag
+- Ascending Triangle (bullish)
+- Descending Triangle (bearish)
+- Symmetric Triangle (neutral until breakout)
+
+**One Position Per Symbol Rule:** Due to WEEX not supporting hedge mode via API, only one position can be held per symbol at a time. The Portfolio Manager rejects signals that conflict with existing positions.
+
+### Signal Flow (Simplified Architecture)
+
+**NO regime-based routing** - All 6 strategies run in parallel, best signal wins.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  For each symbol (BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT):        │
+│                                                                         │
+│  Market Data                                                            │
+│      │                                                                  │
+│      ▼                                                                  │
+│  ┌─────────────────────────────────────────┐                           │
+│  │  Run ALL 6 Strategies (parallel)        │                           │
+│  │  MeanReversion, TrendFollowing, Turtle  │                           │
+│  │  Momentum, Pivot, Pattern               │                           │
+│  └─────────────────────────────────────────┘                           │
+│      │                                                                  │
+│      ▼                                                                  │
+│  ┌─────────────────────────────────────────┐                           │
+│  │  Regime = Confidence MODIFIER (+20%)    │                           │
+│  │  (NOT router - doesn't exclude signals) │                           │
+│  └─────────────────────────────────────────┘                           │
+│      │                                                                  │
+│      ▼                                                                  │
+│  ┌─────────────────────────────────────────┐                           │
+│  │  AlphaGenerator (boost only, no reject) │                           │
+│  │  EdgeScanner (boost only)               │                           │
+│  └─────────────────────────────────────────┘                           │
+│      │                                                                  │
+│      ▼                                                                  │
+│  Best Signal → Portfolio Manager → Risk Manager → Execute              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Changes:**
+1. **No regime routing** - All strategies always run
+2. **Regime = confidence modifier** - +20% boost if strategy aligns with regime
+3. **AlphaGenerator: boost only** - No rejection, only confidence boost
+4. **Lower threshold** - 0.40 (was 0.50) for more trades
+5. **Multi-symbol** - 5 pairs: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT
+
+**Confidence Boosting (cumulative):**
+- Regime alignment: +20%
+- AlphaGenerator alignment: up to +15%
+- EdgeScanner alignment: up to +10%
+- **Max possible boost: +45%**
+
+**TradeJournal Integration:**
+- **Entry notification** sent via Discord when trade opens
+- **Exit notification** sent when trade closes (in TradeOutcomeLoop)
+- **Daily summary** sent during consolidation loop
 
 ### Self-Evolving RL Agents
 
@@ -154,12 +273,22 @@ WEEX_API_URL=https://api.weex.com
 │   ├── services/          # Shared services
 │   │   ├── redis_client.py      # Redis cache persistence
 │   │   ├── market_data_service.py # Multi-timeframe OHLCV
-│   │   ├── indicators_service.py  # Technical indicators
-│   │   ├── pattern_detector.py    # Chart patterns
-│   │   ├── alpha_generator.py     # Signal aggregation
-│   │   └── trade_memory.py        # Triple memory system
+│   │   ├── indicators_service.py  # Technical indicators (50+ via pandas-ta)
+│   │   ├── pattern_detector.py    # Chart patterns (11 patterns)
+│   │   ├── alpha_generator.py     # Signal aggregation (multi-TF confirmation)
+│   │   ├── trade_memory.py        # Triple memory system
+│   │   ├── trade_journal.py       # Human-readable trade logging
+│   │   ├── edge_registry.py       # Statistical edge management
+│   │   ├── edge_scanner.py        # Edge-based signal confirmation
+│   │   ├── kelly_sizer.py         # Fractional Kelly position sizing
+│   │   └── performance_tracker.py # Edge health monitoring
 │   ├── agents/            # AI agents
-│   │   ├── turtle_trading.py      # Turtle breakout system
+│   │   ├── mean_reversion.py      # RSI/BB mean reversion (4H)
+│   │   ├── trend_following.py     # VCP/EMA trend following (4H)
+│   │   ├── turtle_trading.py      # Turtle breakout system (1D)
+│   │   ├── momentum.py            # ROC/MACD momentum (1H)
+│   │   ├── pivot.py               # Pivot point S/R (1D)
+│   │   ├── pattern_agent.py       # Chart patterns H&S/Flags/Wedges (4H)
 │   │   ├── portfolio_manager.py   # Dynamic gatekeeper
 │   │   ├── reflection_agent.py    # Position review (Self-Evolving RL)
 │   │   ├── judge_agent.py         # Trade scoring (Self-Evolving RL)
@@ -282,6 +411,18 @@ PARAMETER_BOUNDS = {
     "turtle_trading": {
         "stop_atr_mult": (1.5, 3.0),
         "risk_per_trade": (0.005, 0.02),
+    },
+    "momentum": {
+        "roc_threshold": (0.03, 0.08),  # ROC breakout threshold
+        "volume_mult": (1.5, 3.0),       # Volume surge multiplier
+    },
+    "pivot": {
+        "bounce_threshold": (0.001, 0.004),  # Bounce detection %
+        "breakout_threshold": (0.003, 0.01), # Breakout confirmation %
+    },
+    "pattern": {
+        "min_confidence": (0.55, 0.75),      # Pattern confidence threshold
+        "max_position_pct": (0.04, 0.08),    # Position size
     },
 }
 ```

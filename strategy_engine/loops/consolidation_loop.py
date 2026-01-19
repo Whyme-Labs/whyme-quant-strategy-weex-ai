@@ -38,6 +38,7 @@ class ConsolidationLoop:
         trade_memory: TradeMemoryService,
         learner_agent: LearnerAgent,
         discord=None,
+        trade_journal=None,
         run_time: time = time(0, 0),  # 00:00 UTC default
         lookback_days: int = 30,
         enable_auto_evolution: bool = True,
@@ -48,6 +49,7 @@ class ConsolidationLoop:
             trade_memory: TradeMemoryService for data access
             learner_agent: LearnerAgent for pattern extraction
             discord: Discord notifier
+            trade_journal: TradeJournal for human-readable summaries
             run_time: Time of day to run (UTC)
             lookback_days: Days of history to analyze
             enable_auto_evolution: Whether to auto-apply parameter changes
@@ -55,6 +57,7 @@ class ConsolidationLoop:
         self.trade_memory = trade_memory
         self.learner_agent = learner_agent
         self.discord = discord
+        self.trade_journal = trade_journal
         self.run_time = run_time
         self.lookback_days = lookback_days
         self.enable_auto_evolution = enable_auto_evolution
@@ -237,6 +240,13 @@ class ConsolidationLoop:
             evolutions: Parameter evolutions
             report: Daily report
         """
+        # Send trade journal daily summary (professional format)
+        if self.trade_journal:
+            try:
+                await self.trade_journal.send_daily_summary()
+            except Exception as e:
+                logger.warning(f"Trade journal daily summary failed: {e}")
+
         if not self.discord:
             return
 

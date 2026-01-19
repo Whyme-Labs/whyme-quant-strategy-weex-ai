@@ -44,6 +44,7 @@ class ExecutorAgent(BaseAgent):
         trade_memory=None,
         discord=None,
         llm_analyzer=None,
+        trade_journal=None,
     ):
         """Initialize Executor Agent.
 
@@ -53,6 +54,7 @@ class ExecutorAgent(BaseAgent):
             trade_memory: TradeMemoryService for recording trades
             discord: Discord notifier for logging
             llm_analyzer: LLM for trade analysis
+            trade_journal: TradeJournal for human-readable trade logging
         """
         super().__init__(config)
 
@@ -60,6 +62,7 @@ class ExecutorAgent(BaseAgent):
         self.trade_memory = trade_memory
         self.discord = discord
         self.llm = llm_analyzer
+        self.trade_journal = trade_journal
 
         # Execution parameters
         self.slippage_tolerance = config.get("slippage_tolerance", 0.001)
@@ -82,6 +85,7 @@ class ExecutorAgent(BaseAgent):
         trade_memory=None,
         discord=None,
         llm_analyzer=None,
+        trade_journal=None,
     ):
         """Set dependencies after initialization.
 
@@ -95,6 +99,8 @@ class ExecutorAgent(BaseAgent):
             self.discord = discord
         if llm_analyzer:
             self.llm = llm_analyzer
+        if trade_journal:
+            self.trade_journal = trade_journal
 
     # =========================================================================
     # MAIN EXECUTION METHODS
@@ -183,6 +189,7 @@ class ExecutorAgent(BaseAgent):
 
             # Record trade in memory
             trade_id = str(uuid.uuid4())
+            trade_record = None
             if self.trade_memory:
                 trade_record = TradeRecord(
                     trade_id=trade_id,
@@ -202,6 +209,14 @@ class ExecutorAgent(BaseAgent):
                     status=TradeStatus.OPEN,
                 )
                 await self.trade_memory.record_trade_entry(trade_record)
+
+                # Send trade journal entry notification
+                if self.trade_journal and trade_record:
+                    try:
+                        await self.trade_journal.create_entry(trade_record)
+                        await self.trade_journal.send_entry_notification(trade_record)
+                    except Exception as journal_err:
+                        logger.warning(f"Trade journal notification failed: {journal_err}")
 
             # Track mapping
             self._order_to_trade[str(order_id)] = trade_id

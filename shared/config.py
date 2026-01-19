@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     max_position_size: float = 1000.0
     max_leverage: int = 20
     default_symbol: str = "BTCUSDT"
+    # Trading symbols - multiple pairs for more opportunities
+    trading_symbols: str = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT"  # Comma-separated
 
     # Heartbeat
     heartbeat_interval: int = 30

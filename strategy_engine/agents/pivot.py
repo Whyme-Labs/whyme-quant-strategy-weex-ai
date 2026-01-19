@@ -9,13 +9,18 @@ Based on classic floor trader techniques:
 - Provides clear entry/exit levels
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
 from dataclasses import dataclass
 import numpy as np
+import pandas as pd
 
 from .base_agent import BaseAgent
 from ai_logging import get_ai_logger, STAGE_STRATEGY_GENERATION
+
+if TYPE_CHECKING:
+    from ..services.indicators_service import IndicatorsService
+    from ..services.market_data_service import MarketDataService
 
 
 class PivotSignalType(Enum):
@@ -73,7 +78,12 @@ class PivotAgent(BaseAgent):
     - Trail stop as price moves in favor
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        indicators_service: Optional["IndicatorsService"] = None,
+        market_data_service: Optional["MarketDataService"] = None,
+    ):
         """Initialize pivot agent.
 
         Args:
@@ -82,6 +92,9 @@ class PivotAgent(BaseAgent):
                 - breakout_threshold: Breakout confirmation threshold (default 0.005)
                 - max_position_pct: Maximum position (default 0.06)
                 - use_fibonacci: Use Fibonacci pivots instead of standard (default False)
+                - timeframe: Timeframe for entry (default "1d")
+            indicators_service: Centralized indicator service
+            market_data_service: Market data service for candles
         """
         super().__init__(config)
         self.bounce_threshold = config.get("bounce_threshold", 0.002)  # 0.2%
@@ -89,6 +102,11 @@ class PivotAgent(BaseAgent):
         self.max_position_pct = config.get("max_position_pct", 0.06)
         self.use_fibonacci = config.get("use_fibonacci", False)
         self.atr_multiplier = config.get("atr_multiplier", 1.5)
+        self.timeframe = config.get("timeframe", "1d")
+
+        # Service dependencies
+        self.indicators_service = indicators_service
+        self.market_data_service = market_data_service
 
         # Daily OHLC for pivot calculation
         self.daily_high: Optional[float] = None
@@ -205,8 +223,10 @@ class PivotAgent(BaseAgent):
                     "target_price": signal.target_price,
                     "position_size_pct": signal.position_size_pct,
                     "pivot_level": signal.pivot_level,
+                    "timeframe": "1d",  # Pivot uses daily OHLC for level calculation
                 },
                 "reasoning": signal.reasoning,
+                "confidence": signal.position_size_pct / self.max_position_pct,  # Confidence based on position sizing
             }
         else:
             return {
