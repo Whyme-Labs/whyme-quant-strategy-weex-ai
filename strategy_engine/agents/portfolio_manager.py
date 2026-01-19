@@ -139,6 +139,16 @@ class PortfolioManagerAgent(BaseAgent):
         if account_info:
             self._update_portfolio_state(account_info)
 
+        # Early check: Is there enough available margin?
+        available_margin = float(account_info.get("available", 0))
+        min_margin_required = 10  # Minimum $10 available to trade
+        if available_margin < min_margin_required:
+            return {
+                "decision": ExecutionDecision.REJECT.value,
+                "approved": False,
+                "reasoning": f"Insufficient margin: ${available_margin:.2f} available, minimum ${min_margin_required} required",
+            }
+
         # If no proposal or hold, skip
         if not proposal or proposal.get("action") == "hold":
             return {
