@@ -20,6 +20,7 @@ from ai_logging import get_ai_logger
 if TYPE_CHECKING:
     from ..services.alpha_generator import AlphaGenerator
     from ..services.edge_scanner import EdgeScanner
+    from ..services.key_level_detector import KeyLevelDetector
 
 
 class AgentOrchestrator:
@@ -41,6 +42,7 @@ class AgentOrchestrator:
         config: Dict[str, Any],
         alpha_generator: Optional["AlphaGenerator"] = None,
         edge_scanner: Optional["EdgeScanner"] = None,
+        key_level_detector: Optional["KeyLevelDetector"] = None,
     ):
         """Initialize orchestrator.
 
@@ -48,6 +50,7 @@ class AgentOrchestrator:
             config: Orchestrator configuration
             alpha_generator: Optional AlphaGenerator for signal confirmation
             edge_scanner: Optional EdgeScanner for edge-based confirmation
+            key_level_detector: Optional KeyLevelDetector for S/R levels
         """
         self.config = config
         self.agents: Dict[str, BaseAgent] = {}
@@ -57,8 +60,10 @@ class AgentOrchestrator:
         self.last_strategy_analysis = []  # Track strategy analysis for external logging
         self.alpha_generator = alpha_generator
         self.edge_scanner = edge_scanner
+        self.key_level_detector = key_level_detector
         self.last_alpha_signal = None  # Track last alpha signal for logging
         self.last_edge_signals = []  # Track last edge signals for logging
+        self.last_key_levels = None  # Track last key levels for logging
 
     def register_agent(self, name: str, agent: BaseAgent):
         """Register an agent with the orchestrator.
@@ -99,6 +104,40 @@ class AgentOrchestrator:
                 "position_value": account_info.get("usedMargin", 0),
             },
         }
+
+        # Stage 0: Key Level Detection (support/resistance)
+        if self.key_level_detector:
+            try:
+                symbol = market_data.get("symbol", "BTCUSDT")
+                current_price = market_data.get("price", 0)
+                key_levels = await self.key_level_detector.detect_all_levels(
+                    symbol=symbol,
+                    candles_1h=market_data.get("candles_1h"),
+                    candles_4h=market_data.get("candles_4h"),
+                    candles_1d=market_data.get("candles_1d"),
+                )
+                context["key_levels"] = key_levels
+                self.last_key_levels = key_levels
+
+                # Get nearest S/R for quick reference
+                if current_price > 0:
+                    nearest = await self.key_level_detector.get_nearest_levels(
+                        symbol, current_price, count=3
+                    )
+                    context["nearest_support"] = nearest.get("supports", [{}])[0] if nearest.get("supports") else None
+                    context["nearest_resistance"] = nearest.get("resistances", [{}])[0] if nearest.get("resistances") else None
+
+                    # Log key level summary
+                    level_summary = self.key_level_detector.get_level_summary(symbol, current_price)
+                    if level_summary.get("has_levels"):
+                        logger.debug(
+                            f"Key levels: {level_summary.get('total_levels', 0)} levels | "
+                            f"Nearest S: {level_summary.get('distance_to_support_pct', 0):.2f}% | "
+                            f"Nearest R: {level_summary.get('distance_to_resistance_pct', 0):.2f}%"
+                        )
+            except Exception as e:
+                logger.warning(f"Key level detection failed: {e}")
+                context["key_levels"] = None
 
         # Stage 1: Regime Detection (primary routing decision)
         if "regime_detector" in self.agents:

@@ -24,6 +24,8 @@ from .services import (
     KellySizer,
     EdgeScanner,
     PerformanceTracker,
+    # Support/Resistance Detection
+    KeyLevelDetector,
 )
 from .agents import (
     MarketAnalystAgent,
@@ -155,6 +157,16 @@ class StrategyEngine:
         )
         logger.info("Alpha Generator initialized")
 
+        # Initialize Key Level Detector (Support/Resistance)
+        self.key_level_detector = KeyLevelDetector(
+            market_data_service=self.market_data_service,
+            redis_client=self.redis_client,
+            swing_lookback=5,  # 5 candles for swing detection
+            cluster_threshold=0.005,  # 0.5% for clustering
+            volume_profile_bins=50,
+        )
+        logger.info("Key Level Detector initialized (S/R, Fibonacci, Volume Profile)")
+
         # Initialize Trade Memory Service (Triple Memory System)
         self.trade_memory = TradeMemoryService(redis_client=self.redis_client)
         await self.trade_memory.initialize()
@@ -261,6 +273,7 @@ class StrategyEngine:
             config={},
             alpha_generator=self.alpha_generator,
             edge_scanner=self.edge_scanner,
+            key_level_detector=self.key_level_detector,
         )
 
         # Register agents - Regime-based multi-agent architecture

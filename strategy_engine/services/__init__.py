@@ -28,6 +28,7 @@ from .edge_registry import EdgeRegistry
 from .kelly_sizer import KellySizer
 from .edge_scanner import EdgeScanner
 from .performance_tracker import PerformanceTracker
+from .key_level_detector import KeyLevelDetector
 
 __all__ = [
     "RedisClient",
@@ -42,4 +43,6 @@ __all__ = [
     "KellySizer",
     "EdgeScanner",
     "PerformanceTracker",
+    # Support/Resistance Detection
+    "KeyLevelDetector",
 ]

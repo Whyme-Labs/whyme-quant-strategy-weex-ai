@@ -138,7 +138,7 @@ class PivotAgent(BaseAgent):
 
         Args:
             context: Dictionary containing:
-                - market_data: Current market data
+                - market_data: Current market data with candles
                 - regime: Current market regime
 
         Returns:
@@ -151,7 +151,7 @@ class PivotAgent(BaseAgent):
         high = market_data.get("high_24h", current_price)
         low = market_data.get("low_24h", current_price)
 
-        # Update history
+        # Update history from ticker
         if current_price > 0:
             self.price_history.append(current_price)
             self.high_history.append(high)
@@ -164,14 +164,34 @@ class PivotAgent(BaseAgent):
                 self.high_history = self.high_history[-max_len:]
                 self.low_history = self.low_history[-max_len:]
 
-        # Auto-calculate pivots from 24h data if not set
-        if self._pivot_levels is None and len(self.price_history) > 24:
-            self._auto_calculate_pivots()
+        # Calculate pivots from candle data (preferred) or 24h data
+        if self._pivot_levels is None:
+            # Try daily candles first
+            candles_1d = market_data.get("candles_1d", [])
+            if candles_1d and len(candles_1d) >= 2:
+                # Use previous completed candle
+                prev_candle = candles_1d[-2]
+                self._pivot_levels = self._calculate_pivots(
+                    float(prev_candle.get("high", 0)),
+                    float(prev_candle.get("low", 0)),
+                    float(prev_candle.get("close", 0))
+                )
+            # Fallback to 4h candles
+            elif market_data.get("candles_4h") and len(market_data.get("candles_4h", [])) >= 6:
+                candles_4h = market_data.get("candles_4h", [])
+                # Use last 6 candles (24 hours)
+                period_high = max(float(c.get("high", 0)) for c in candles_4h[-6:])
+                period_low = min(float(c.get("low", 0)) for c in candles_4h[-6:])
+                period_close = float(candles_4h[-1].get("close", 0))
+                self._pivot_levels = self._calculate_pivots(period_high, period_low, period_close)
+            # Fallback to 24h high/low from ticker
+            elif high > 0 and low > 0 and current_price > 0:
+                self._pivot_levels = self._calculate_pivots(high, low, current_price)
 
         if self._pivot_levels is None:
             return {
                 "signal": None,
-                "reasoning": "Pivot levels not yet calculated. Need previous period data."
+                "reasoning": "Pivot levels not yet calculated. Need candle or 24h data."
             }
 
         # Check if we have enough data
