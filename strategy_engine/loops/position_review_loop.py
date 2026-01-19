@@ -174,12 +174,12 @@ class PositionReviewLoop:
             if isinstance(response, list):
                 positions = response
             elif isinstance(response, dict):
-                positions = [response] if response.get("total") else []
+                positions = [response] if response.get("size") else []  # API returns 'size' not 'total'
             else:
                 positions = []
 
             # Filter for non-zero positions
-            return [p for p in positions if float(p.get("total", 0)) != 0]
+            return [p for p in positions if float(p.get("size", 0)) != 0]  # API returns 'size' not 'total'
 
         except Exception as e:
             logger.error(f"Failed to fetch positions: {e}")
@@ -307,7 +307,7 @@ class PositionReviewLoop:
             logger.warning(f"Position not found for {review.symbol}")
             return
 
-        size = float(position.get("total", 0))
+        size = float(position.get("size", 0))
         if size <= 0:
             return
 
@@ -346,7 +346,7 @@ class PositionReviewLoop:
         if not position:
             return
 
-        current_size = float(position.get("total", 0))
+        current_size = float(position.get("size", 0))
         if current_size <= 0:
             return
 
@@ -387,7 +387,7 @@ class PositionReviewLoop:
         if not position:
             return
 
-        current_size = float(position.get("total", 0))
+        current_size = float(position.get("size", 0))
         if current_size <= 0:
             return
 

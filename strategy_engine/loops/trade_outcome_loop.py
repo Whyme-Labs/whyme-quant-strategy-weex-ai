@@ -411,9 +411,9 @@ Provide a 2-3 sentence reflection on:
 
             if isinstance(current, list):
                 for p in current:
-                    if float(p.get("total", 0)) != 0:
+                    if float(p.get("size", 0)) != 0:  # API returns 'size' not 'total'
                         # Try to find matching trade_id
-                        order_id = p.get("orderId", p.get("positionId", ""))
+                        order_id = p.get("orderId", p.get("id", ""))  # API returns 'id' not 'positionId'
                         current_ids.add(str(order_id))
 
             # Find positions that are no longer open

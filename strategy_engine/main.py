@@ -540,14 +540,14 @@ class StrategyEngine:
                         account_info["positions"] = [
                             {
                                 "symbol": p.get("symbol", symbol),
-                                "side": "long" if p.get("holdSide") == "long" else "short",
-                                "size": float(p.get("total", 0)),
+                                "side": p.get("side", "LONG").lower(),  # API returns 'LONG'/'SHORT'
+                                "size": float(p.get("size", 0)),  # API returns 'size' not 'total'
                                 "entryPrice": float(p.get("averageOpenPrice", 0)),
-                                "unrealizedPnl": float(p.get("unrealizedPL", 0)),
-                                "margin": float(p.get("margin", 0)),
+                                "unrealizedPnl": float(p.get("unrealizePnl", 0)),
+                                "margin": float(p.get("marginSize", 0)),
                             }
                             for p in positions
-                            if float(p.get("total", 0)) > 0
+                            if float(p.get("size", 0)) > 0
                         ]
                         if account_info["positions"]:
                             logger.info(f"Portfolio state: {len(account_info['positions'])} open positions")
@@ -733,10 +733,10 @@ class StrategyEngine:
                 open_position_ids = set()
                 if isinstance(positions, list):
                     for p in positions:
-                        total = float(p.get("total", 0))
-                        if total != 0:
+                        size = float(p.get("size", 0))  # API returns 'size' not 'total'
+                        if size != 0:
                             # Position is still open
-                            open_position_ids.add(str(p.get("positionId", "")))
+                            open_position_ids.add(str(p.get("id", "")))
 
                 # Check each tracked trade
                 closed_trades = []
@@ -758,7 +758,7 @@ class StrategyEngine:
                     position_closed = True
                     for p in (positions if isinstance(positions, list) else []):
                         # Check if position matches this trade
-                        if abs(float(p.get("total", 0))) > 0:
+                        if abs(float(p.get("size", 0))) > 0:  # API returns 'size' not 'total'
                             # There's still an open position, assume trade is still active
                             position_closed = False
                             break

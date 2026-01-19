@@ -292,8 +292,8 @@ class ExecutorAgent(BaseAgent):
 
         try:
             symbol = position.get("symbol", "").replace("cmt_", "").upper() or "BTCUSDT"
-            hold_side = position.get("holdSide", "long")
-            size = abs(float(position.get("total", 0)))
+            hold_side = position.get("side", "LONG").lower()
+            size = abs(float(position.get("size", 0)))
 
             if size <= 0:
                 logger.warning(f"EXECUTOR: No position to close for {trade_id}")
@@ -404,8 +404,8 @@ class ExecutorAgent(BaseAgent):
 
         try:
             symbol = position.get("symbol", "").replace("cmt_", "").upper() or "BTCUSDT"
-            hold_side = position.get("holdSide", "long")
-            current_size = abs(float(position.get("total", 0)))
+            hold_side = position.get("side", "LONG").lower()
+            current_size = abs(float(position.get("size", 0)))
             reduce_size = current_size * reduce_pct
 
             if reduce_size <= 0:
@@ -473,9 +473,9 @@ class ExecutorAgent(BaseAgent):
 
         try:
             symbol = position.get("symbol", "").replace("cmt_", "").upper() or "BTCUSDT"
-            hold_side = position.get("holdSide", "long")
+            hold_side = position.get("side", "LONG").lower()
             add_side = "buy" if hold_side == "long" else "sell"
-            current_size = abs(float(position.get("total", 0)))
+            current_size = abs(float(position.get("size", 0)))
             add_size = current_size * add_pct
 
             if add_size <= 0:
