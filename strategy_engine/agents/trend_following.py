@@ -175,6 +175,7 @@ class TrendFollowingAgent(BaseAgent):
                     "stop_price": signal.stop_price,
                     "initial_target": signal.initial_target,
                     "position_size_pct": signal.position_size_pct,
+                    "timeframe": "4h",  # Trend following uses 4H candles
                 },
                 "reasoning": signal.reasoning,
             }

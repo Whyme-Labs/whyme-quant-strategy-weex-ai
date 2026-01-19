@@ -174,6 +174,7 @@ class MeanReversionAgent(BaseAgent):
                     "target_price": signal.target_price,
                     "stop_price": signal.stop_price,
                     "position_size_pct": signal.position_size_pct,
+                    "timeframe": "4h",  # Mean reversion uses 4H candles
                 },
                 "reasoning": signal.reasoning,
             }
@@ -224,12 +225,15 @@ class MeanReversionAgent(BaseAgent):
             )
             reasoning_parts.append(f"RSI oversold ({rsi:.1f} < {self.rsi_oversold})")
 
+            # Calculate stop loss: 2% below entry for longs
+            stop_price = current_price * 0.98
+
             signal = MeanReversionSignal(
                 direction="long",
                 strength=SignalStrength.STRONG,
                 entry_price=current_price,
                 target_price=bb_middle,  # Target mean
-                stop_price=None,  # MR uses size as defense
+                stop_price=stop_price,  # 2% stop loss
                 position_size_pct=self.max_position_pct * 0.8,  # 80% of max
                 reasoning=". ".join(reasoning_parts) + ". Strong mean reversion long setup."
             )
@@ -242,12 +246,15 @@ class MeanReversionAgent(BaseAgent):
             if oversold_rsi:
                 reasoning_parts.append(f"RSI approaching oversold ({rsi:.1f})")
 
+            # Calculate stop loss: 2% below entry for longs
+            stop_price = current_price * 0.98
+
             signal = MeanReversionSignal(
                 direction="long",
                 strength=SignalStrength.MODERATE,
                 entry_price=current_price,
                 target_price=bb_middle,
-                stop_price=None,
+                stop_price=stop_price,  # 2% stop loss
                 position_size_pct=self.max_position_pct * 0.5,  # 50% of max
                 reasoning=". ".join(reasoning_parts) + ". Moderate mean reversion long."
             )
@@ -260,12 +267,15 @@ class MeanReversionAgent(BaseAgent):
             )
             reasoning_parts.append(f"RSI overbought ({rsi:.1f} > {self.rsi_overbought})")
 
+            # Calculate stop loss: 2% above entry for shorts
+            stop_price = current_price * 1.02
+
             signal = MeanReversionSignal(
                 direction="short",
                 strength=SignalStrength.STRONG,
                 entry_price=current_price,
                 target_price=bb_middle,
-                stop_price=None,  # Caution: shorts have unlimited risk
+                stop_price=stop_price,  # 2% stop loss
                 position_size_pct=self.max_position_pct * 0.6,  # More conservative for shorts
                 reasoning=". ".join(reasoning_parts) + ". Strong mean reversion short setup."
             )
@@ -278,12 +288,15 @@ class MeanReversionAgent(BaseAgent):
             if overbought_rsi:
                 reasoning_parts.append(f"RSI approaching overbought ({rsi:.1f})")
 
+            # Calculate stop loss: 2% above entry for shorts
+            stop_price = current_price * 1.02
+
             signal = MeanReversionSignal(
                 direction="short",
                 strength=SignalStrength.MODERATE,
                 entry_price=current_price,
                 target_price=bb_middle,
-                stop_price=None,
+                stop_price=stop_price,  # 2% stop loss
                 position_size_pct=self.max_position_pct * 0.3,  # Conservative
                 reasoning=". ".join(reasoning_parts) + ". Moderate mean reversion short."
             )

@@ -28,6 +28,7 @@ class Signal:
     reason: str = ""
     confidence: float = 0.0
     strategy: str = ""  # Strategy that generated this signal
+    timeframe: str = "4h"  # Timeframe signal was generated from (1h, 4h, 1d)
     timestamp: datetime = field(default_factory=datetime.utcnow)
     metadata: Dict[str, Any] = field(default_factory=dict)
 

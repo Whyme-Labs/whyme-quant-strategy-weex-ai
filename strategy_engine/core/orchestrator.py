@@ -355,6 +355,7 @@ class AgentOrchestrator:
             reason=proposal.get("reason", "Multi-agent decision"),
             confidence=proposal.get("confidence", 0.5),
             strategy=proposal.get("strategy", "unknown"),
+            timeframe=proposal.get("timeframe", "4h"),  # Include timeframe from strategy
             model_used=self._get_primary_model(),
             ai_explanation=self._build_explanation(context),
             metadata={

@@ -139,8 +139,24 @@ class PortfolioManagerAgent(BaseAgent):
         if account_info:
             self._update_portfolio_state(account_info)
 
-        # Early check: Is there enough available margin?
+        # Get account state
+        equity = float(account_info.get("equity", 0))
         available_margin = float(account_info.get("available", 0))
+        used_margin = float(account_info.get("usedMargin", 0))
+        existing_positions = account_info.get("positions", [])
+
+        # Calculate current exposure
+        total_position_margin = sum(
+            float(p.get("margin", 0)) for p in existing_positions
+        )
+        current_exposure_pct = (total_position_margin / equity * 100) if equity > 0 else 0
+
+        # ============================================================
+        # CRITICAL: Margin and Exposure Checks
+        # These are the most important guards against over-trading
+        # ============================================================
+
+        # Check 1: Minimum available margin
         min_margin_required = 10  # Minimum $10 available to trade
         if available_margin < min_margin_required:
             return {
@@ -148,6 +164,45 @@ class PortfolioManagerAgent(BaseAgent):
                 "approved": False,
                 "reasoning": f"Insufficient margin: ${available_margin:.2f} available, minimum ${min_margin_required} required",
             }
+
+        # Check 2: Maximum total exposure limit (50% of equity)
+        max_total_exposure_pct = self.max_portfolio_exposure * 100  # Default 50%
+        if current_exposure_pct >= max_total_exposure_pct:
+            return {
+                "decision": ExecutionDecision.REJECT.value,
+                "approved": False,
+                "reasoning": f"Max portfolio exposure reached: {current_exposure_pct:.1f}% (limit: {max_total_exposure_pct:.0f}%). Cannot open new positions.",
+            }
+
+        # Check 3: Ensure we keep reserve margin (at least 30% of equity)
+        min_reserve_pct = 30
+        min_reserve = equity * (min_reserve_pct / 100)
+        if available_margin < min_reserve:
+            return {
+                "decision": ExecutionDecision.REJECT.value,
+                "approved": False,
+                "reasoning": f"Must maintain {min_reserve_pct}% reserve. Available: ${available_margin:.2f}, Required reserve: ${min_reserve:.2f}",
+            }
+
+        # Check 4: Already have open position in the same direction?
+        # This prevents repeated trades from the same signal
+        symbol = proposal.get("symbol", "BTCUSDT") if proposal else None
+        action = proposal.get("action", "").lower() if proposal else ""
+        proposed_side = "long" if action == "buy" else "short" if action == "sell" else ""
+
+        if symbol and proposed_side:
+            for pos in existing_positions:
+                pos_symbol = pos.get("symbol", "").replace("cmt_", "").upper()
+                pos_side = pos.get("side", "").lower()
+                pos_size = float(pos.get("size", 0))
+
+                # Check if same symbol and same direction
+                if pos_symbol == symbol and pos_side == proposed_side and pos_size > 0:
+                    return {
+                        "decision": ExecutionDecision.REJECT.value,
+                        "approved": False,
+                        "reasoning": f"Already have open {pos_side.upper()} position on {symbol} (size: {pos_size}). Cannot open another {proposed_side.upper()}.",
+                    }
 
         # If no proposal or hold, skip
         if not proposal or proposal.get("action") == "hold":

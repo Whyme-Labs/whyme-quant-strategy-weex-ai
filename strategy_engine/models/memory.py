@@ -58,6 +58,7 @@ class TradeRecord(BaseModel):
     entry_side: str = Field(..., description="'long' or 'short'")
     entry_size: float = Field(..., description="Position size")
     entry_strategy: str = Field(..., description="Strategy that generated signal")
+    entry_timeframe: str = Field(default="4h", description="Timeframe the signal was generated from (1h, 4h, 1d)")
     entry_regime: Dict[str, str] = Field(
         default_factory=dict,
         description="Market regime at entry: {volatility, trend, volume}"

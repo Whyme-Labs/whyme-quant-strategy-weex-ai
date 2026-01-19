@@ -192,6 +192,7 @@ class TurtleTradingAgent(BaseAgent):
                 "position_size_pct": signal.position_size_pct,
                 "strategy": f"turtle_{signal.system.value}",
                 "initial_target": None,  # Turtles use trailing exit, not fixed target
+                "timeframe": "1d",  # Turtle trading uses daily candles
             },
             "action": signal.action,
             "unit_number": signal.unit_number,

@@ -20,6 +20,30 @@ WEEX AI Strategy Engine - A multi-agent AI trading system for the WEEX AI Wars H
 
 ## Environment Setup
 
+### Docker (Recommended)
+
+```bash
+# Build and start all services
+docker compose up -d --build
+
+# View logs
+docker compose logs -f strategy-engine
+
+# Stop services
+docker compose down
+
+# Stop and remove volumes (clears Redis data)
+docker compose down -v
+```
+
+**Services:**
+- `weex-ai-strategy` - Strategy engine container
+- `weex-redis` - Redis container for memory persistence
+
+### Local Development (Code Changes Only)
+
+**Important:** Local development CANNOT call the WEEX API due to IP whitelisting requirements. Only the production server IP is whitelisted.
+
 ```bash
 # Create conda environment
 conda create -n weex-ai python=3.11 -y
@@ -27,12 +51,8 @@ conda create -n weex-ai python=3.11 -y
 # Activate environment
 conda activate weex-ai
 
-# Install dependencies (use env pip directly to avoid path issues)
-/opt/homebrew/Caskroom/miniconda/base/envs/weex-ai/bin/pip install -r requirements.txt
-
-# Or install core dependencies manually
-/opt/homebrew/Caskroom/miniconda/base/envs/weex-ai/bin/pip install \
-    python-dotenv loguru httpx pydantic pydantic-settings aiosqlite numpy pandas
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 **Conda Environment:** `weex-ai` (Python 3.11)
@@ -121,6 +141,8 @@ WEEX_API_URL=https://api.weex.com
 ## Key Directories
 
 ```
+├── Dockerfile             # Container build configuration
+├── docker-compose.yml     # Multi-container orchestration
 ├── weex_client/           # WEEX API client
 │   ├── client.py          # Main API client
 │   └── auth.py            # Authentication (HMAC signing)
@@ -153,26 +175,50 @@ WEEX_API_URL=https://api.weex.com
 │   ├── discord.py         # Discord notifications
 │   └── llm.py             # LLM analysis + reflection methods
 ├── scripts/               # Utility scripts
-│   └── deploy.sh          # Production deployment
 ├── tests/                 # Unit tests
 └── docs/                  # Documentation
 ```
 
 ## Development Commands
 
+### Docker Commands
+
+```bash
+# Build and start all services
+docker compose up -d --build
+
+# View strategy engine logs
+docker compose logs -f strategy-engine
+
+# View all logs
+docker compose logs -f
+
+# Restart strategy engine
+docker compose restart strategy-engine
+
+# Stop all services
+docker compose down
+
+# Rebuild after code changes
+docker compose up -d --build
+
+# Check container status
+docker compose ps
+```
+
+### Local Development (Code Only - No API Access)
+
+**Important:** WEEX API requires IP whitelisting. Only the production server IP (209.182.237.49) is whitelisted. Local development CANNOT make API calls.
+
 ```bash
 # Activate environment
 conda activate weex-ai
 
-# Test connection
-python scripts/test_connection.py
-
-# Run tests
+# Run unit tests (no API calls)
 pytest tests/ -v
-
-# Run strategy engine
-python -m strategy_engine.main
 ```
+
+**Note:** Always deploy to the remote server to test with live WEEX API.
 
 ## Hackathon Requirements
 
@@ -184,6 +230,9 @@ python -m strategy_engine.main
 
 ## Important Notes
 
+- **Production Only**: The strategy engine should ONLY run on the remote server (209.182.237.49), never locally
+- **IP Whitelisting**: WEEX API requires IP whitelisting - only the production server IP is whitelisted
+- **Docker Deployment**: Always use `docker compose` for running the strategy engine
 - **Multi-Timeframe**: Use 1H for entry timing, 4H for medium signals, 1D for Turtle breakouts
 - **Redis Persistence**: Candle data and trade memory survive container restarts
 - **Housekeeping**: Runs every 5 minutes, trims cache to limits
@@ -278,8 +327,12 @@ docker exec weex-redis redis-cli smembers "memory:episodic:open"
 **Production Server:**
 - **IP Address:** `209.182.237.49`
 - **SSH Access:** `ssh root@209.182.237.49 -i ~/.ssh/ssdnodes_sg_1`
+- **WEEX UID:** `3004783944`
 
-**Deployment Steps:**
+**Important:** The strategy engine should ONLY be run on the remote production server, never locally.
+
+### Initial Setup (First Time)
+
 ```bash
 # Connect to server
 ssh root@209.182.237.49 -i ~/.ssh/ssdnodes_sg_1
@@ -288,20 +341,58 @@ ssh root@209.182.237.49 -i ~/.ssh/ssdnodes_sg_1
 git clone https://github.com/Whyme-Labs/whyme-quant-strategy-weex-ai.git
 cd whyme-quant-strategy-weex-ai
 
-# Setup Python environment
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
 # Configure environment
 cp .env.example .env
-# Edit .env with production credentials
+nano .env  # Edit with production credentials
 
-# Run the strategy engine
-python -m strategy_engine.main
+# Build and start with Docker
+docker compose up -d --build
+
+# Verify containers are running
+docker compose ps
+
+# Check logs
+docker compose logs -f strategy-engine
 ```
 
-**WEEX UID:** `3004783944`
+### Deployment (Code Updates)
+
+```bash
+# Connect to server
+ssh root@209.182.237.49 -i ~/.ssh/ssdnodes_sg_1
+cd whyme-quant-strategy-weex-ai
+
+# Pull latest changes
+git pull origin main
+
+# Rebuild and restart
+docker compose up -d --build
+
+# Verify deployment
+docker compose logs -f strategy-engine
+```
+
+### Management Commands
+
+```bash
+# View live logs
+docker compose logs -f strategy-engine
+
+# Restart strategy engine
+docker compose restart strategy-engine
+
+# Stop all services
+docker compose down
+
+# Stop and clear all data (including Redis)
+docker compose down -v
+
+# Check container status
+docker compose ps
+
+# Access Redis CLI
+docker exec -it weex-redis redis-cli
+```
 
 ## References
 

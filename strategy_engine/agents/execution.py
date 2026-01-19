@@ -192,6 +192,7 @@ class ExecutorAgent(BaseAgent):
                     entry_side="long" if signal.action.value == "buy" else "short",
                     entry_size=btc_size,  # Use actual BTC size, not percentage
                     entry_strategy=signal.strategy,
+                    entry_timeframe=getattr(signal, 'timeframe', '4h'),  # Timeframe from signal
                     entry_regime=regime.copy() if regime else {},
                     entry_confidence=signal.confidence,
                     entry_reasoning=signal.reason or "",
