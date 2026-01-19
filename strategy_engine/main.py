@@ -519,7 +519,7 @@ class StrategyEngine:
                 candles_4h = candles_4h_df.to_dict('records') if not candles_4h_df.empty else []
                 candles_1d = candles_1d_df.to_dict('records') if not candles_1d_df.empty else []
 
-                # Fetch account info for portfolio manager
+                # Fetch account info for portfolio manager (including positions for restart awareness)
                 account_info = {}
                 try:
                     assets = await self.weex_client.get_assets()
@@ -531,7 +531,26 @@ class StrategyEngine:
                                 "available": float(usdt_asset.get("available", 0)),
                                 "usedMargin": float(usdt_asset.get("frozen", 0)),
                                 "unrealizedPnl": float(usdt_asset.get("unrealizePnl", 0)),
+                                "positions": [],  # Will be populated below
                             }
+
+                    # Fetch open positions to ensure portfolio awareness across restarts
+                    positions = await self.weex_client.get_position(symbol)
+                    if positions and isinstance(positions, list):
+                        account_info["positions"] = [
+                            {
+                                "symbol": p.get("symbol", symbol),
+                                "side": "long" if p.get("holdSide") == "long" else "short",
+                                "size": float(p.get("total", 0)),
+                                "entryPrice": float(p.get("averageOpenPrice", 0)),
+                                "unrealizedPnl": float(p.get("unrealizedPL", 0)),
+                                "margin": float(p.get("margin", 0)),
+                            }
+                            for p in positions
+                            if float(p.get("total", 0)) > 0
+                        ]
+                        if account_info["positions"]:
+                            logger.info(f"Portfolio state: {len(account_info['positions'])} open positions")
                 except Exception as e:
                     logger.debug(f"Failed to fetch account info: {e}")
 

@@ -129,24 +129,47 @@ class ExecutorAgent(BaseAgent):
             entry_price = signal.price or market_data.get("price", 0)
             symbol = signal.symbol
 
+            # Convert position percentage to actual BTC amount
+            # signal.size is position_size_pct * 100 (e.g., 2.5 means 2.5%)
+            position_pct = (signal.size or 0) / 100
+            account_info = market_data.get("account_info", {})
+            equity = account_info.get("equity", 1000)  # Default 1000 USDT
+            leverage = 20  # WEEX hackathon max leverage
+
+            # Calculate actual position size in BTC
+            margin_to_use = equity * position_pct
+            notional_value = margin_to_use * leverage
+            btc_size = notional_value / entry_price if entry_price > 0 else 0
+
+            # Round to 4 decimal places for WEEX (contract_val is 0.0001 BTC)
+            btc_size = round(btc_size, 4)
+
+            # Minimum order size check
+            if btc_size < 0.0001:
+                logger.warning(f"EXECUTOR: Order size {btc_size} BTC below minimum 0.0001")
+                return None
+
+            logger.info(f"EXECUTOR: Position sizing - equity={equity}, pct={position_pct*100:.1f}%, "
+                       f"margin={margin_to_use:.2f}, notional={notional_value:.2f}, btc_size={btc_size:.4f}")
+
             # Log intent
             await self._log_discord(
                 "EXECUTOR: Opening Position",
                 f"**{signal.action.value.upper()} {symbol}**\n"
                 f"Price: ${entry_price:,.2f}\n"
-                f"Size: {signal.size}\n"
+                f"Size: {btc_size:.4f} BTC (~${notional_value:.0f})\n"
                 f"Strategy: {signal.strategy}\n"
                 f"Confidence: {signal.confidence*100:.0f}%",
                 color=0x3498DB,  # Blue - pending
             )
 
-            # Execute order
+            # Execute order - use market order for reliable execution
             result = await self.weex_client.place_order(
                 symbol=symbol,
                 side=signal.action.value,
-                order_type="limit" if signal.price else "market",
-                size=str(signal.size),
-                price=str(signal.price) if signal.price else None,
+                order_type="market",  # Use market orders for reliable execution
+                size=str(btc_size),
+                price=None,  # No price for market orders
             )
 
             order_id = result.get("orderId")
@@ -164,7 +187,7 @@ class ExecutorAgent(BaseAgent):
                     entry_timestamp=datetime.now(),
                     entry_price=entry_price,
                     entry_side="long" if signal.action.value == "buy" else "short",
-                    entry_size=signal.size,
+                    entry_size=btc_size,  # Use actual BTC size, not percentage
                     entry_strategy=signal.strategy,
                     entry_regime=regime.copy() if regime else {},
                     entry_confidence=signal.confidence,
