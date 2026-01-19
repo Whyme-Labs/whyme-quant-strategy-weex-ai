@@ -57,7 +57,7 @@ class AgentOrchestrator:
         self.ai_logger = get_ai_logger()
         self._running = False
         self.last_regime = None
-        self.last_strategy_analysis = []  # Track strategy analysis for external logging
+        self.last_strategy_analysis: Dict[str, list] = {}  # Track per-symbol strategy analysis
         self.alpha_generator = alpha_generator
         self.edge_scanner = edge_scanner
         self.key_level_detector = key_level_detector
@@ -389,8 +389,9 @@ class AgentOrchestrator:
             else:
                 logger.debug(f"Pattern: {pattern_reasoning}")
 
-        # Store analysis for external access
-        self.last_strategy_analysis = strategy_analysis
+        # Store analysis for external access (keyed by symbol)
+        symbol = context.get("symbol", "UNKNOWN")
+        self.last_strategy_analysis[symbol] = strategy_analysis
 
         # Return strongest signal (by confidence or position size)
         if signals:

@@ -560,6 +560,9 @@ class StrategyEngine:
             try:
                 iteration_count += 1
 
+                # Clear stale analysis at start of each cycle
+                self.orchestrator.last_strategy_analysis.clear()
+
                 # Process each symbol
                 for symbol in symbols:
                     if not self._running:
@@ -692,21 +695,38 @@ class StrategyEngine:
 
                 # Periodic strategy analysis log (every 60 iterations = ~5 minutes)
                 if iteration_count % 60 == 0 and self.orchestrator.last_strategy_analysis:
-                    analysis_fields = {}
-                    for strategy_name, has_signal, reasoning in self.orchestrator.last_strategy_analysis:
-                        status = "✅ SIGNAL" if has_signal else "⏸️ Waiting"
-                        # Truncate reasoning if too long
-                        short_reasoning = reasoning[:100] + "..." if len(reasoning) > 100 else reasoning
-                        analysis_fields[strategy_name] = f"{status}\n{short_reasoning}"
+                    # Build per-symbol analysis with clear labeling
+                    for symbol, analyses in self.orchestrator.last_strategy_analysis.items():
+                        # Only log symbols with signals
+                        signals_found = [a for a in analyses if a[1]]  # a[1] = has_signal
+                        if signals_found:
+                            signal_fields = {}
+                            for strategy_name, has_signal, reasoning in analyses:
+                                if has_signal:
+                                    # Only show strategies with signals
+                                    short_reasoning = reasoning[:80] + "..." if len(reasoning) > 80 else reasoning
+                                    signal_fields[f"✅ {strategy_name}"] = short_reasoning
 
-                    await self.discord.send_trace(
-                        "Strategy Analysis",
-                        f"Multi-symbol scan ({len(symbols)} pairs)",
-                        {
-                            "Symbols": ", ".join(symbols),
-                            **analysis_fields,
-                        }
-                    )
+                            await self.discord.send_trace(
+                                f"📊 {symbol}",
+                                f"{len(signals_found)} signal(s) detected",
+                                signal_fields
+                            )
+
+                    # Also send a summary of pairs with no signals
+                    no_signal_pairs = [
+                        sym for sym, analyses in self.orchestrator.last_strategy_analysis.items()
+                        if not any(a[1] for a in analyses)
+                    ]
+                    if no_signal_pairs:
+                        await self.discord.send_trace(
+                            "Strategy Summary",
+                            f"Scanned {len(symbols)} pairs",
+                            {
+                                "🔄 Waiting": ", ".join(no_signal_pairs),
+                                "Active Signals": str(len(symbols) - len(no_signal_pairs)),
+                            }
+                        )
 
                 # Wait before next iteration (after processing all symbols)
                 await asyncio.sleep(self.settings.main_loop_interval)
