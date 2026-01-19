@@ -70,7 +70,11 @@ class AgentOrchestrator:
         Returns:
             Trading signal if agents agree, None otherwise
         """
-        context = {"market_data": market_data, "timestamp": market_data.get("timestamp")}
+        context = {
+            "market_data": market_data,
+            "timestamp": market_data.get("timestamp"),
+            "account_info": market_data.get("account_info", {}),
+        }
 
         # Stage 1: Regime Detection (primary routing decision)
         if "regime_detector" in self.agents:

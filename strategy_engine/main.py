@@ -519,6 +519,22 @@ class StrategyEngine:
                 candles_4h = candles_4h_df.to_dict('records') if not candles_4h_df.empty else []
                 candles_1d = candles_1d_df.to_dict('records') if not candles_1d_df.empty else []
 
+                # Fetch account info for portfolio manager
+                account_info = {}
+                try:
+                    assets = await self.weex_client.get_assets()
+                    if assets and isinstance(assets, list):
+                        usdt_asset = next((a for a in assets if a.get("coinName") == "USDT"), None)
+                        if usdt_asset:
+                            account_info = {
+                                "equity": float(usdt_asset.get("equity", 0)),
+                                "available": float(usdt_asset.get("available", 0)),
+                                "usedMargin": float(usdt_asset.get("frozen", 0)),
+                                "unrealizedPnl": float(usdt_asset.get("unrealizePnl", 0)),
+                            }
+                except Exception as e:
+                    logger.debug(f"Failed to fetch account info: {e}")
+
                 market_data = {
                     "symbol": symbol,
                     "price": float(ticker.get("last", 0)),
@@ -533,6 +549,8 @@ class StrategyEngine:
                     "candles_1h": candles_1h,
                     "candles_4h": candles_4h,
                     "candles_1d": candles_1d,
+                    # Account info for portfolio manager
+                    "account_info": account_info,
                 }
 
                 # Process through agent orchestrator
