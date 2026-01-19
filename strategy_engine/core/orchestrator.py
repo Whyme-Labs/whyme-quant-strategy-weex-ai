@@ -144,8 +144,8 @@ class AgentOrchestrator:
                 logger.info(f"Trade rejected by risk manager: {risk_result.get('reason')}")
                 return None
 
-            # Apply risk adjustments
-            if "adjusted_size" in risk_result:
+            # Apply risk adjustments (only if adjusted_size is not None)
+            if risk_result.get("adjusted_size") is not None:
                 context["strategy_proposal"]["size"] = risk_result["adjusted_size"]
 
             logger.debug(f"Risk approved: {risk_result}")

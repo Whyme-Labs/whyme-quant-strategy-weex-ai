@@ -582,24 +582,25 @@ class StrategyEngine:
                         )
 
                 if signal:
-                    logger.info(f"Trade approved by Portfolio Manager: {signal.action.value} {signal.size} {signal.symbol}")
+                    logger.info(f"Trade approved by Portfolio Manager: {signal.action.value} size={signal.size or 'N/A'} {signal.symbol}")
 
                     # Update regime from signal metadata
                     if signal.metadata.get("regime"):
                         self._last_regime = signal.metadata["regime"]
 
                     # Log signal approval trace
+                    entry_price = signal.price or market_data.get('price', 0)
                     await self.discord.send_trace(
                         "Portfolio",
                         f"Trade APPROVED by Portfolio Manager",
                         {
                             "Direction": signal.action.value.upper(),
-                            "Size": f"{signal.size:.4f}",
-                            "Entry": f"${signal.price or market_data['price']:,.2f}",
+                            "Size": f"{signal.size:.4f}" if signal.size else "N/A",
+                            "Entry": f"${entry_price:,.2f}",
                             "TP": f"${signal.target_price:,.2f}" if signal.target_price else "Not set",
                             "SL": f"${signal.stop_price:,.2f}" if signal.stop_price else "Not set",
-                            "Confidence": f"{signal.confidence*100:.0f}%",
-                            "Strategy": signal.strategy,
+                            "Confidence": f"{signal.confidence*100:.0f}%" if signal.confidence else "N/A",
+                            "Strategy": signal.strategy or "unknown",
                         }
                     )
 
