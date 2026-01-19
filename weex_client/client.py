@@ -111,6 +111,10 @@ class WeexClient:
         else:
             response = await client.post(url, content=body, headers=headers)
 
+        # Log response on error for debugging
+        if response.status_code >= 400:
+            logger.error(f"WEEX API Error Response: {response.status_code} - {response.text}")
+
         response.raise_for_status()
         result = response.json()
 
