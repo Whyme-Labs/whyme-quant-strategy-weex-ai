@@ -113,26 +113,33 @@ class MeanReversionAgent(BaseAgent):
 
         current_price = market_data.get("price", 0)
 
-        # Update price history
-        if current_price > 0:
-            self.price_history.append(current_price)
-            if len(self.price_history) > 200:
-                self.price_history = self.price_history[-200:]
+        # Use OHLCV candle data for proper calculations (prefer 4h for mean reversion)
+        candles = market_data.get("candles_4h") or market_data.get("candles_1h") or []
 
-            # Aggregate to higher timeframe (e.g., every 4 candles = 4H if base is 1H)
-            self._htf_counter += 1
-            if self._htf_counter >= self.htf_multiplier:
-                # Use close of the period for HTF
-                self.htf_price_history.append(current_price)
-                self._htf_counter = 0
-                if len(self.htf_price_history) > 100:
-                    self.htf_price_history = self.htf_price_history[-100:]
+        if candles and len(candles) >= self.min_htf_periods:
+            # Extract close prices from candles for HTF analysis
+            self.htf_price_history = [float(c.get("close", 0)) for c in candles]
+            self.price_history = self.htf_price_history.copy()
+        else:
+            # Fallback: build history from ticks (less accurate)
+            if current_price > 0:
+                self.price_history.append(current_price)
+                if len(self.price_history) > 200:
+                    self.price_history = self.price_history[-200:]
+
+                # Aggregate to higher timeframe (e.g., every 4 candles = 4H if base is 1H)
+                self._htf_counter += 1
+                if self._htf_counter >= self.htf_multiplier:
+                    self.htf_price_history.append(current_price)
+                    self._htf_counter = 0
+                    if len(self.htf_price_history) > 100:
+                        self.htf_price_history = self.htf_price_history[-100:]
 
         # Check if we have enough data (need HTF data for confirmation)
         if len(self.htf_price_history) < self.min_htf_periods:
             return {
                 "signal": None,
-                "reasoning": f"Building HTF data: {len(self.htf_price_history)}/{self.min_htf_periods} periods. RSI/BB need higher timeframe to reduce noise."
+                "reasoning": f"Building HTF data: {len(self.htf_price_history)}/{self.min_htf_periods} periods. Need {self.min_htf_periods} candles for RSI/BB."
             }
 
         # Generate signal with HTF confirmation
