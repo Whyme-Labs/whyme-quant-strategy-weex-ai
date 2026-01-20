@@ -105,10 +105,28 @@ class MomentumAgent(BaseAgent):
         self.indicators_service = indicators_service
         self.market_data_service = market_data_service
 
-        self.price_history: List[float] = []
-        self.high_history: List[float] = []
-        self.low_history: List[float] = []
-        self.volume_history: List[float] = []
+        # Per-symbol caching (CRITICAL: Each symbol needs its own data)
+        # Without this, BTC data would be used for SOL, ETH, etc.
+        self._symbol_data: Dict[str, Dict[str, List[float]]] = {}
+        # Structure: {symbol: {"price_history": [...], "high_history": [...], ...}}
+
+    def _get_symbol_data(self, symbol: str) -> Dict[str, List[float]]:
+        """Get or initialize per-symbol data.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            Symbol-specific data dictionary
+        """
+        if symbol not in self._symbol_data:
+            self._symbol_data[symbol] = {
+                "price_history": [],
+                "high_history": [],
+                "low_history": [],
+                "volume_history": [],
+            }
+        return self._symbol_data[symbol]
 
     async def process(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Process market data and generate momentum signals.
@@ -117,12 +135,19 @@ class MomentumAgent(BaseAgent):
             context: Dictionary containing:
                 - market_data: Current market data with OHLCV candles
                 - regime: Current market regime
+                - symbol: Trading symbol (CRITICAL for per-symbol data isolation)
 
         Returns:
             Dictionary with signal details
         """
         market_data = context.get("market_data", {})
         regime = context.get("regime", {})
+
+        # CRITICAL: Get symbol to ensure per-symbol data isolation
+        symbol = context.get("symbol") or market_data.get("symbol", "UNKNOWN")
+
+        # Get per-symbol data
+        sym_data = self._get_symbol_data(symbol)
 
         current_price = market_data.get("price", 0)
         volume = market_data.get("volume", 0)
@@ -135,11 +160,11 @@ class MomentumAgent(BaseAgent):
         low = market_data.get("low_24h", current_price)
 
         if candles and len(candles) >= 5:
-            # Extract OHLCV arrays from candles
-            self.price_history = [float(c.get("close", 0)) for c in candles]
-            self.high_history = [float(c.get("high", 0)) for c in candles]
-            self.low_history = [float(c.get("low", 0)) for c in candles]
-            self.volume_history = [float(c.get("volume", 0)) for c in candles]
+            # Extract OHLCV arrays from candles into per-symbol storage
+            sym_data["price_history"] = [float(c.get("close", 0)) for c in candles]
+            sym_data["high_history"] = [float(c.get("high", 0)) for c in candles]
+            sym_data["low_history"] = [float(c.get("low", 0)) for c in candles]
+            sym_data["volume_history"] = [float(c.get("volume", 0)) for c in candles]
             # Update high/low from latest candle
             if candles:
                 high = float(candles[-1].get("high", high))
@@ -147,29 +172,35 @@ class MomentumAgent(BaseAgent):
         else:
             # Fallback: append current ticker data (less accurate)
             if current_price > 0:
-                self.price_history.append(current_price)
-                self.high_history.append(high)
-                self.low_history.append(low)
-                self.volume_history.append(volume)
+                sym_data["price_history"].append(current_price)
+                sym_data["high_history"].append(high)
+                sym_data["low_history"].append(low)
+                sym_data["volume_history"].append(volume)
 
                 # Keep limited history
                 max_len = max(self.roc_period, self.macd_slow, self.rsi_period) * 3
-                if len(self.price_history) > max_len:
-                    self.price_history = self.price_history[-max_len:]
-                    self.high_history = self.high_history[-max_len:]
-                    self.low_history = self.low_history[-max_len:]
-                    self.volume_history = self.volume_history[-max_len:]
+                if len(sym_data["price_history"]) > max_len:
+                    sym_data["price_history"] = sym_data["price_history"][-max_len:]
+                    sym_data["high_history"] = sym_data["high_history"][-max_len:]
+                    sym_data["low_history"] = sym_data["low_history"][-max_len:]
+                    sym_data["volume_history"] = sym_data["volume_history"][-max_len:]
 
         # Check if we have enough data
         min_required = max(self.roc_period, self.macd_slow) + 5
-        if len(self.price_history) < min_required:
+        if len(sym_data["price_history"]) < min_required:
             return {
                 "signal": None,
-                "reasoning": f"Insufficient candle data: {len(self.price_history)}/{min_required} periods"
+                "reasoning": f"[{symbol}] Insufficient candle data: {len(sym_data['price_history'])}/{min_required} periods"
             }
 
-        # Generate signals
-        signal = self._generate_signal(current_price, regime)
+        # Generate signals using per-symbol data
+        signal = self._generate_signal(
+            current_price, regime,
+            sym_data["price_history"],
+            sym_data["high_history"],
+            sym_data["low_history"],
+            sym_data["volume_history"],
+        )
 
         # Log AI decision
         ai_logger = get_ai_logger()
@@ -219,6 +250,10 @@ class MomentumAgent(BaseAgent):
         self,
         current_price: float,
         regime: Dict[str, Any],
+        price_history: List[float],
+        high_history: List[float],
+        low_history: List[float],
+        volume_history: List[float],
     ) -> Optional[MomentumSignal]:
         """Generate momentum signal.
 
@@ -227,14 +262,18 @@ class MomentumAgent(BaseAgent):
         Args:
             current_price: Current price
             regime: Market regime
+            price_history: Per-symbol price history
+            high_history: Per-symbol high history
+            low_history: Per-symbol low history
+            volume_history: Per-symbol volume history
 
         Returns:
             MomentumSignal
         """
-        prices = np.array(self.price_history)
-        highs = np.array(self.high_history)
-        lows = np.array(self.low_history)
-        volumes = np.array(self.volume_history)
+        prices = np.array(price_history)
+        highs = np.array(high_history)
+        lows = np.array(low_history)
+        volumes = np.array(volume_history)
 
         # Calculate indicators
         roc = self._calculate_roc(prices)
