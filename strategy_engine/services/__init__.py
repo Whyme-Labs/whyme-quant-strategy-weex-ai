@@ -29,6 +29,7 @@ from .kelly_sizer import KellySizer
 from .edge_scanner import EdgeScanner
 from .performance_tracker import PerformanceTracker
 from .key_level_detector import KeyLevelDetector
+from .smc_detector import SMCDetector
 
 __all__ = [
     "RedisClient",
@@ -45,4 +46,6 @@ __all__ = [
     "PerformanceTracker",
     # Support/Resistance Detection
     "KeyLevelDetector",
+    # Smart Money Concepts
+    "SMCDetector",
 ]

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..services.alpha_generator import AlphaGenerator
     from ..services.edge_scanner import EdgeScanner
     from ..services.key_level_detector import KeyLevelDetector
+    from ..services.smc_detector import SMCDetector
 
 
 class AgentOrchestrator:
@@ -43,6 +44,7 @@ class AgentOrchestrator:
         alpha_generator: Optional["AlphaGenerator"] = None,
         edge_scanner: Optional["EdgeScanner"] = None,
         key_level_detector: Optional["KeyLevelDetector"] = None,
+        smc_detector: Optional["SMCDetector"] = None,
     ):
         """Initialize orchestrator.
 
@@ -51,6 +53,7 @@ class AgentOrchestrator:
             alpha_generator: Optional AlphaGenerator for signal confirmation
             edge_scanner: Optional EdgeScanner for edge-based confirmation
             key_level_detector: Optional KeyLevelDetector for S/R levels
+            smc_detector: Optional SMCDetector for Smart Money Concepts
         """
         self.config = config
         self.agents: Dict[str, BaseAgent] = {}
@@ -61,9 +64,11 @@ class AgentOrchestrator:
         self.alpha_generator = alpha_generator
         self.edge_scanner = edge_scanner
         self.key_level_detector = key_level_detector
+        self.smc_detector = smc_detector
         self.last_alpha_signal = None  # Track last alpha signal for logging
         self.last_edge_signals = []  # Track last edge signals for logging
         self.last_key_levels = None  # Track last key levels for logging
+        self.last_smc_data = None  # Track last SMC data for logging
 
     def register_agent(self, name: str, agent: BaseAgent):
         """Register an agent with the orchestrator.
@@ -138,6 +143,106 @@ class AgentOrchestrator:
             except Exception as e:
                 logger.warning(f"Key level detection failed: {e}")
                 context["key_levels"] = None
+
+        # Stage 0.5: SMC Detection (Smart Money Concepts)
+        if self.smc_detector:
+            try:
+                symbol = market_data.get("symbol", "BTCUSDT")
+                current_price = market_data.get("price", 0)
+                smc_data = await self.smc_detector.detect_all(
+                    symbol=symbol,
+                    candles_1h=market_data.get("candles_1h"),
+                    candles_4h=market_data.get("candles_4h"),
+                    candles_1d=market_data.get("candles_1d"),
+                )
+                context["smc"] = smc_data
+                self.last_smc_data = smc_data
+
+                # Get SMC summary for quick reference
+                if current_price > 0:
+                    smc_summary = self.smc_detector.get_smc_summary(symbol, current_price)
+                    context["smc_summary"] = smc_summary
+
+                    # Log comprehensive SMC information
+                    trend = smc_summary.get("trend", "unknown")
+                    prem_disc = smc_summary.get("premium_discount", {})
+                    zone = prem_disc.get("current_zone", "unknown") if prem_disc else "unknown"
+                    distance_pct = prem_disc.get("distance_pct", 0) if prem_disc else 0
+                    active_obs = smc_summary.get("active_ob_count", 0)
+                    active_fvgs = smc_summary.get("active_fvg_count", 0)
+                    buy_liq = smc_summary.get("buy_liquidity_pools", 0)
+                    sell_liq = smc_summary.get("sell_liquidity_pools", 0)
+                    structure = smc_summary.get("structure_summary", {})
+
+                    logger.info(
+                        f"SMC [{symbol}]: trend={trend}, zone={zone} ({distance_pct:+.2f}%), "
+                        f"OBs={active_obs}, FVGs={active_fvgs}, liq_pools=buy:{buy_liq}/sell:{sell_liq}, "
+                        f"structure=HH:{structure.get('hh_count', 0)}/HL:{structure.get('hl_count', 0)}/"
+                        f"LH:{structure.get('lh_count', 0)}/LL:{structure.get('ll_count', 0)}"
+                    )
+
+                    # Log order blocks detail
+                    if smc_data.get("order_blocks"):
+                        for ob in smc_data["order_blocks"][:3]:
+                            logger.debug(
+                                f"  OB: {ob.get('direction')} {ob.get('timeframe')} | "
+                                f"zone={ob.get('price_low'):.2f}-{ob.get('price_high'):.2f} | "
+                                f"impulse={ob.get('impulse_size_pct'):.2f}% | "
+                                f"strength={ob.get('strength')}"
+                            )
+
+                    # Log FVG detail
+                    if smc_data.get("fair_value_gaps"):
+                        for fvg in smc_data["fair_value_gaps"][:3]:
+                            logger.debug(
+                                f"  FVG: {fvg.get('direction')} {fvg.get('timeframe')} | "
+                                f"gap={fvg.get('gap_low'):.2f}-{fvg.get('gap_high'):.2f} | "
+                                f"size={fvg.get('gap_size_pct'):.2f}% | "
+                                f"filled={fvg.get('filled')}"
+                            )
+
+                    # Log BOS/CHoCH events
+                    if smc_data.get("bos_events"):
+                        for bos in smc_data["bos_events"][-2:]:
+                            logger.debug(
+                                f"  BOS: {bos.get('direction')} {bos.get('timeframe')} | "
+                                f"break_price={bos.get('break_price'):.2f} | "
+                                f"confirmed={bos.get('confirmed')}"
+                            )
+
+                    if smc_data.get("choch_events"):
+                        for choch in smc_data["choch_events"][-2:]:
+                            logger.info(
+                                f"  CHoCH: {choch.get('direction')} {choch.get('timeframe')} | "
+                                f"choch_price={choch.get('choch_price'):.2f} | "
+                                f"old_trend={choch.get('old_trend')}"
+                            )
+
+                    # Log liquidity pools
+                    if smc_data.get("liquidity_pools"):
+                        for pool in smc_data["liquidity_pools"][:3]:
+                            logger.debug(
+                                f"  LIQ: {pool.get('side')}-side {pool.get('timeframe')} | "
+                                f"level={pool.get('price_level'):.2f} | "
+                                f"source={pool.get('source')} | "
+                                f"touches={pool.get('num_touches')} | "
+                                f"swept={pool.get('swept')}"
+                            )
+
+                    # Log inducements (potential stop hunts)
+                    if smc_data.get("inducements"):
+                        for ind in smc_data["inducements"]:
+                            logger.info(
+                                f"  INDUCEMENT: {ind.get('direction')} {ind.get('timeframe')} | "
+                                f"level={ind.get('inducement_level'):.2f} | "
+                                f"sweep={ind.get('sweep_low'):.2f}-{ind.get('sweep_high'):.2f} | "
+                                f"reversal_confirmed={ind.get('reversal_confirmed')}"
+                            )
+
+            except Exception as e:
+                logger.warning(f"SMC detection failed: {e}")
+                context["smc"] = None
+                context["smc_summary"] = None
 
         # Stage 1: Regime Detection (primary routing decision)
         if "regime_detector" in self.agents:

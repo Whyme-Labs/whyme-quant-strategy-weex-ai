@@ -154,6 +154,7 @@ This strategy uses specialized AI agents that collaborate based on detected mark
 | **PatternDetector** | Chart pattern recognition | Head & Shoulders, VCP, Double Top/Bottom |
 | **AlphaGenerator** | Signal aggregation | Multi-timeframe signal scoring |
 | **KeyLevelDetector** | Support/Resistance detection | Swing levels, Fibonacci, Volume Profile |
+| **SMCDetector** | Smart Money Concepts | Order Blocks, FVG, BOS/CHoCH, Liquidity |
 | **RedisClient** | Cache persistence | Survives container restarts |
 
 ### Support/Resistance Detection (KeyLevelDetector)
@@ -184,6 +185,49 @@ Comprehensive key level detection system with 5 methods:
    - High Volume Nodes (HVN): Areas of high trading activity → support/resistance
    - Low Volume Nodes (LVN): Areas of low activity → price moves quickly through
    - 50-bin volume histogram analysis
+
+### Smart Money Concepts (SMCDetector)
+
+Comprehensive Smart Money Concepts detection for institutional trading patterns:
+
+| Concept | Description | Trading Use |
+|---------|-------------|-------------|
+| **Order Blocks (OB)** | Last opposing candle before impulse move | Institutional entry zones |
+| **Fair Value Gaps (FVG)** | Price imbalances/inefficiencies (3-candle gaps) | Price magnets for retracement |
+| **Break of Structure (BOS)** | Price breaking swing levels in trend direction | Trend continuation confirmation |
+| **Change of Character (CHoCH)** | First break against prevailing trend | Early reversal signal |
+| **Liquidity Pools** | Equal highs/lows, swing points (stop clusters) | Stop hunt / trap detection |
+| **Premium/Discount Zones** | Value areas based on Fibonacci 50% | Entry timing (buy discount, sell premium) |
+| **Inducement** | False breakouts / stop hunts | Trap detection and reversal confirmation |
+
+**Order Block Detection:**
+- Bullish OB: Last red candle before strong bullish impulse (>1.5%)
+- Bearish OB: Last green candle before strong bearish impulse (>1.5%)
+- Strength based on impulse size: Weak (<2%), Moderate (2-3%), Strong (3-5%), Very Strong (>5%)
+
+**Fair Value Gap Detection:**
+- Bullish FVG: Gap where Candle[0].high < Candle[2].low
+- Bearish FVG: Gap where Candle[0].low > Candle[2].high
+- Minimum gap size: 0.3% for signal validity
+- Tracks fill percentage as price returns to gap
+
+**Market Structure Analysis:**
+- Detects Higher Highs (HH), Higher Lows (HL), Lower Highs (LH), Lower Lows (LL)
+- Trend determination: BULLISH (HH+HL), BEARISH (LH+LL), RANGING
+- BOS: Break in trend direction (continuation)
+- CHoCH: First break against trend (reversal)
+
+**Premium/Discount Zones:**
+- Premium Zone: Above 61.8% Fib (expensive - sell zone)
+- Discount Zone: Below 38.2% Fib (cheap - buy zone)
+- Equilibrium: Around 50% (fair value)
+
+**Caching Strategy:**
+- Order Blocks: 24h TTL
+- FVGs: 24h TTL
+- Market Structure: 1h TTL (changes frequently)
+- Liquidity Pools: 24h TTL
+- Premium/Discount: 4h TTL
 
 ### AI Agents
 

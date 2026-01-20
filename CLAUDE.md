@@ -139,6 +139,14 @@ TRADING_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
    - Level strength tracking (test count, bounce rate)
    - Multi-timeframe S/R clustering
    - Volume Profile analysis (HVN/LVN detection)
+8. **SMCDetector** - Smart Money Concepts detection with 7 concepts:
+   - Order Blocks (OB) - Last opposing candle before impulse move (entry zones)
+   - Fair Value Gaps (FVG) - Price imbalances/inefficiencies (price magnets)
+   - Break of Structure (BOS) - Trend continuation signals
+   - Change of Character (CHoCH) - Trend reversal signals
+   - Liquidity Pools - Stop loss clusters (equal highs/lows, swing points)
+   - Premium/Discount Zones - Value areas based on Fibonacci 50%
+   - Inducement - False breakouts designed to trap traders
 
 **Signal Confirmation Services (Integrated in Orchestrator):**
 7. **AlphaGenerator** - Used as signal confirmation (boosts confidence if aligned, rejects if strongly disagrees)
@@ -282,6 +290,8 @@ The Pattern Agent uses `PatternDetector` service to identify classical chart pat
 │   │   ├── indicators_service.py  # Technical indicators (50+ via pandas-ta)
 │   │   ├── pattern_detector.py    # Chart patterns (11 patterns)
 │   │   ├── alpha_generator.py     # Signal aggregation (multi-TF confirmation)
+│   │   ├── key_level_detector.py  # Support/Resistance (Swing, Fib, Volume Profile)
+│   │   ├── smc_detector.py        # Smart Money Concepts (OB, FVG, BOS, CHoCH, Liquidity)
 │   │   ├── trade_memory.py        # Triple memory system
 │   │   ├── trade_journal.py       # Human-readable trade logging
 │   │   ├── edge_registry.py       # Statistical edge management
@@ -395,6 +405,12 @@ memory:episodic:open                 → Set of open trade_ids
 memory:semantic:{insight_id}         → StrategyInsight JSON
 memory:procedural:{agent}:{param}    → ParameterState JSON
 memory:procedural:evolution          → List of evolutions
+key_levels:{symbol}                  → KeyLevel JSON (24h TTL)
+smc:order_blocks:{symbol}            → Order Blocks JSON (24h TTL)
+smc:fvg:{symbol}                     → Fair Value Gaps JSON (24h TTL)
+smc:structure:{symbol}               → Market Structure JSON (1h TTL)
+smc:liquidity_pools:{symbol}         → Liquidity Pools JSON (24h TTL)
+smc:premium_discount:{symbol}        → Premium/Discount JSON (4h TTL)
 ```
 
 ### Parameter Evolution Bounds
@@ -447,6 +463,24 @@ docker exec weex-redis redis-cli keys "memory:procedural:*"
 
 # Get open trades
 docker exec weex-redis redis-cli smembers "memory:episodic:open"
+
+# Check SMC data
+docker exec weex-redis redis-cli keys "smc:*"
+
+# Check order blocks for BTC
+docker exec weex-redis redis-cli get "smc:order_blocks:BTCUSDT"
+
+# Check FVGs for BTC
+docker exec weex-redis redis-cli get "smc:fvg:BTCUSDT"
+
+# Check market structure for BTC
+docker exec weex-redis redis-cli get "smc:structure:BTCUSDT"
+
+# Check liquidity pools for BTC
+docker exec weex-redis redis-cli get "smc:liquidity_pools:BTCUSDT"
+
+# Check key levels for BTC
+docker exec weex-redis redis-cli get "key_levels:BTCUSDT"
 ```
 
 ## WEEX API Configuration

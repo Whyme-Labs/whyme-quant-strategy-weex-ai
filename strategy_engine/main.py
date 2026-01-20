@@ -26,6 +26,8 @@ from .services import (
     PerformanceTracker,
     # Support/Resistance Detection
     KeyLevelDetector,
+    # Smart Money Concepts
+    SMCDetector,
 )
 from .agents import (
     MarketAnalystAgent,
@@ -106,6 +108,9 @@ class StrategyEngine:
         # Trade Journal for human-readable trade logging
         self.trade_journal: Optional[TradeJournal] = None
 
+        # Smart Money Concepts Detector
+        self.smc_detector: Optional[SMCDetector] = None
+
     async def initialize(self):
         """Initialize all components."""
         logger.info("Initializing WEEX AI Strategy Engine...")
@@ -166,6 +171,20 @@ class StrategyEngine:
             volume_profile_bins=50,
         )
         logger.info("Key Level Detector initialized (S/R, Fibonacci, Volume Profile)")
+
+        # Initialize SMC Detector (Smart Money Concepts)
+        self.smc_detector = SMCDetector(
+            market_data_service=self.market_data_service,
+            redis_client=self.redis_client,
+            key_level_detector=self.key_level_detector,
+            swing_lookback=5,  # 5 candles for swing detection
+            ob_lookback=20,  # 20 candles for order block detection
+            fvg_lookback=50,  # 50 candles for FVG detection
+            min_impulse_pct=0.015,  # 1.5% minimum impulse for OB
+            min_fvg_pct=0.003,  # 0.3% minimum gap size
+            equal_level_tolerance=0.002,  # 0.2% for equal highs/lows
+        )
+        logger.info("SMC Detector initialized (Order Blocks, FVG, BOS/CHoCH, Liquidity, Premium/Discount)")
 
         # Initialize Trade Memory Service (Triple Memory System)
         self.trade_memory = TradeMemoryService(redis_client=self.redis_client)
@@ -274,6 +293,7 @@ class StrategyEngine:
             alpha_generator=self.alpha_generator,
             edge_scanner=self.edge_scanner,
             key_level_detector=self.key_level_detector,
+            smc_detector=self.smc_detector,
         )
 
         # Register agents - Regime-based multi-agent architecture
@@ -447,7 +467,8 @@ class StrategyEngine:
             f"- Kelly Fraction: 25% (conservative)\n\n"
             f"**Multi-Timeframe System:**\n"
             f"- Timeframes: 1H, 4H, 1D (real candles)\n"
-            f"- Strategies: Turtle, Trend, MR, Momentum, Pivot\n\n"
+            f"- Strategies: Turtle, Trend, MR, Momentum, Pivot\n"
+            f"- SMC: Order Blocks, FVG, BOS/CHoCH, Liquidity, Premium/Discount\n\n"
             f"**Self-Evolving RL System:**\n"
             f"- Triple Memory: Episodic, Semantic, Procedural\n"
             f"- Position Monitor: Detects trade closes (60s interval)\n"
