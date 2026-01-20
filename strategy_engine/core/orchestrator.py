@@ -537,6 +537,14 @@ class AgentOrchestrator:
         # Map direction to action
         action = "buy" if direction == "long" else "sell"
 
+        # Extract ATR/N value if available (from Turtle, Momentum, etc.)
+        atr_value = (
+            strategy_result.get("n_value") or  # Turtle trading uses n_value
+            signal.get("atr") or
+            signal.get("n_value") or
+            None
+        )
+
         return {
             "action": action,
             "symbol": signal.get("symbol", "BTCUSDT"),
@@ -545,6 +553,8 @@ class AgentOrchestrator:
             "stop_price": signal.get("stop_price"),
             "target_price": signal.get("target_price") or signal.get("initial_target"),
             "strategy": signal.get("strategy"),
+            "timeframe": signal.get("timeframe", "4h"),  # Include timeframe for SL calculation
+            "atr": atr_value,  # Include ATR for dynamic stop loss
             "reason": strategy_result.get("reasoning", ""),
             "confidence": strategy_result.get("confidence", 0.5),
             "explanation": strategy_result.get("reasoning", ""),

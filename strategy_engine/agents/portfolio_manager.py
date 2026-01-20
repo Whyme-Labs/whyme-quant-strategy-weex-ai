@@ -33,6 +33,303 @@ class ExecutionDecision(Enum):
 
 
 @dataclass
+class DynamicStopLossResult:
+    """Result of dynamic stop loss calculation."""
+    stop_price: float
+    target_price: float
+    risk_reward_ratio: float
+    stop_distance_pct: float
+    target_distance_pct: float
+    atr_multiplier_used: float
+    confidence_adjustment: float
+    regime_adjustment: float
+    key_level_adjustment: float
+    reasoning: str
+
+
+class DynamicStopLossCalculator:
+    """Dynamic Stop Loss Calculator.
+
+    Calculates optimal stop loss and take profit levels based on:
+    1. ATR (Average True Range) for volatility-adaptive stops
+    2. Signal confidence for risk scaling
+    3. Target risk-reward ratios that scale with confidence
+    4. Market regime adjustments
+    5. Key support/resistance level awareness
+
+    Philosophy:
+    - Higher confidence = tighter stops allowed (smaller risk per trade)
+    - Lower confidence = wider stops required (more room for noise)
+    - R:R ratio scales with confidence (high conf = target higher R:R)
+    - Never place stops at obvious levels (add buffer beyond S/R)
+    """
+
+    # Base ATR multipliers for stop distance
+    BASE_ATR_MULTIPLIER = 2.0
+
+    # Confidence-based stop adjustment factors
+    # Higher confidence = can use tighter stop (smaller multiplier)
+    CONFIDENCE_STOP_ADJUSTMENTS = {
+        "very_high": 0.75,   # Confidence > 0.85: tighter stop
+        "high": 0.85,        # Confidence 0.75-0.85: slightly tighter
+        "medium": 1.0,       # Confidence 0.60-0.75: standard
+        "low": 1.2,          # Confidence 0.45-0.60: wider stop
+        "very_low": 1.4,     # Confidence < 0.45: much wider
+    }
+
+    # Confidence-based R:R targets
+    # Higher confidence = can target higher R:R
+    CONFIDENCE_RR_TARGETS = {
+        "very_high": 2.5,    # Confidence > 0.85: aim for 2.5:1
+        "high": 2.0,         # Confidence 0.75-0.85: aim for 2:1
+        "medium": 1.75,      # Confidence 0.60-0.75: aim for 1.75:1
+        "low": 1.5,          # Confidence 0.45-0.60: minimum 1.5:1
+        "very_low": 1.25,    # Confidence < 0.45: may reduce to 1.25:1
+    }
+
+    # Regime-based adjustments
+    REGIME_ADJUSTMENTS = {
+        "high": 1.3,         # High volatility: widen stop by 30%
+        "medium": 1.0,       # Normal volatility: no change
+        "low": 0.9,          # Low volatility: tighten stop by 10%
+    }
+
+    # Key level buffer (how far beyond S/R to place stop)
+    KEY_LEVEL_BUFFER_PCT = 0.003  # 0.3% beyond key level
+
+    def __init__(
+        self,
+        base_atr_multiplier: float = 2.0,
+        min_rr_ratio: float = 1.25,
+        max_stop_distance_pct: float = 0.05,  # Max 5% stop distance
+        min_stop_distance_pct: float = 0.005,  # Min 0.5% stop distance
+    ):
+        """Initialize dynamic stop loss calculator.
+
+        Args:
+            base_atr_multiplier: Base ATR multiplier for stop distance
+            min_rr_ratio: Minimum acceptable risk-reward ratio
+            max_stop_distance_pct: Maximum stop distance as % of entry
+            min_stop_distance_pct: Minimum stop distance as % of entry
+        """
+        self.base_atr_multiplier = base_atr_multiplier
+        self.min_rr_ratio = min_rr_ratio
+        self.max_stop_distance_pct = max_stop_distance_pct
+        self.min_stop_distance_pct = min_stop_distance_pct
+
+    def calculate(
+        self,
+        entry_price: float,
+        direction: str,  # "long" or "short"
+        confidence: float,
+        atr: Optional[float] = None,
+        regime_volatility: str = "medium",
+        key_levels: Optional[Dict[str, Any]] = None,
+        original_stop: Optional[float] = None,
+        original_target: Optional[float] = None,
+    ) -> DynamicStopLossResult:
+        """Calculate dynamic stop loss and take profit.
+
+        Args:
+            entry_price: Entry price for the trade
+            direction: Trade direction ("long" or "short")
+            confidence: Signal confidence (0.0 - 1.0)
+            atr: Average True Range value (optional, will estimate if not provided)
+            regime_volatility: Market volatility regime ("high", "medium", "low")
+            key_levels: Dict with "supports" and "resistances" lists
+            original_stop: Original stop price from strategy (for reference)
+            original_target: Original target price from strategy (for reference)
+
+        Returns:
+            DynamicStopLossResult with calculated levels
+        """
+        reasoning_parts = []
+
+        # 1. Determine confidence tier
+        confidence_tier = self._get_confidence_tier(confidence)
+        reasoning_parts.append(f"Confidence tier: {confidence_tier} ({confidence:.2f})")
+
+        # 2. Get confidence-based adjustments
+        confidence_stop_adj = self.CONFIDENCE_STOP_ADJUSTMENTS[confidence_tier]
+        target_rr = self.CONFIDENCE_RR_TARGETS[confidence_tier]
+        reasoning_parts.append(f"Target R:R: {target_rr}:1")
+
+        # 3. Get regime-based adjustment
+        regime_adj = self.REGIME_ADJUSTMENTS.get(regime_volatility, 1.0)
+        if regime_volatility == "high":
+            reasoning_parts.append(f"High volatility: +30% stop buffer")
+        elif regime_volatility == "low":
+            reasoning_parts.append(f"Low volatility: -10% stop buffer")
+
+        # 4. Calculate base stop distance
+        if atr and atr > 0:
+            # Use ATR-based calculation
+            atr_mult_used = self.base_atr_multiplier * confidence_stop_adj * regime_adj
+            stop_distance = atr * atr_mult_used
+            reasoning_parts.append(f"ATR-based stop: {atr_mult_used:.2f}x ATR")
+        elif original_stop and original_stop > 0:
+            # Use original stop as reference
+            stop_distance = abs(entry_price - original_stop)
+            stop_distance *= confidence_stop_adj * regime_adj
+            atr_mult_used = 0  # Not ATR-based
+            reasoning_parts.append(f"Strategy-based stop adjusted by {confidence_stop_adj * regime_adj:.2f}x")
+        else:
+            # Fallback: use percentage of price
+            base_pct = 0.02  # 2% default
+            stop_distance = entry_price * base_pct * confidence_stop_adj * regime_adj
+            atr_mult_used = 0
+            reasoning_parts.append(f"Default 2% stop adjusted to {base_pct * confidence_stop_adj * regime_adj:.1%}")
+
+        # 5. Enforce min/max stop distance
+        stop_distance_pct = stop_distance / entry_price
+        if stop_distance_pct > self.max_stop_distance_pct:
+            stop_distance = entry_price * self.max_stop_distance_pct
+            reasoning_parts.append(f"Capped stop at {self.max_stop_distance_pct:.1%} max")
+        elif stop_distance_pct < self.min_stop_distance_pct:
+            stop_distance = entry_price * self.min_stop_distance_pct
+            reasoning_parts.append(f"Raised stop to {self.min_stop_distance_pct:.1%} min")
+
+        # 6. Calculate initial stop and target prices
+        if direction == "long":
+            stop_price = entry_price - stop_distance
+            target_distance = stop_distance * target_rr
+            target_price = entry_price + target_distance
+        else:  # short
+            stop_price = entry_price + stop_distance
+            target_distance = stop_distance * target_rr
+            target_price = entry_price - target_distance
+
+        # 7. Key level adjustment
+        key_level_adj = 0.0
+        if key_levels:
+            stop_price, key_level_adj, level_reason = self._adjust_for_key_levels(
+                stop_price=stop_price,
+                entry_price=entry_price,
+                direction=direction,
+                key_levels=key_levels,
+            )
+            if level_reason:
+                reasoning_parts.append(level_reason)
+                # Recalculate target to maintain R:R
+                stop_distance = abs(entry_price - stop_price)
+                target_distance = stop_distance * target_rr
+                if direction == "long":
+                    target_price = entry_price + target_distance
+                else:
+                    target_price = entry_price - target_distance
+
+        # 8. Final calculations
+        final_stop_distance_pct = abs(entry_price - stop_price) / entry_price
+        final_target_distance_pct = abs(target_price - entry_price) / entry_price
+        final_rr = final_target_distance_pct / final_stop_distance_pct if final_stop_distance_pct > 0 else 0
+
+        # 9. Ensure minimum R:R
+        if final_rr < self.min_rr_ratio:
+            # Adjust target to meet minimum R:R
+            target_distance = stop_distance * self.min_rr_ratio
+            if direction == "long":
+                target_price = entry_price + target_distance
+            else:
+                target_price = entry_price - target_distance
+            final_rr = self.min_rr_ratio
+            reasoning_parts.append(f"Adjusted target to meet min R:R {self.min_rr_ratio}:1")
+
+        return DynamicStopLossResult(
+            stop_price=stop_price,
+            target_price=target_price,
+            risk_reward_ratio=final_rr,
+            stop_distance_pct=final_stop_distance_pct,
+            target_distance_pct=abs(target_price - entry_price) / entry_price,
+            atr_multiplier_used=atr_mult_used,
+            confidence_adjustment=confidence_stop_adj,
+            regime_adjustment=regime_adj,
+            key_level_adjustment=key_level_adj,
+            reasoning=" | ".join(reasoning_parts),
+        )
+
+    def _get_confidence_tier(self, confidence: float) -> str:
+        """Map confidence value to tier."""
+        if confidence >= 0.85:
+            return "very_high"
+        elif confidence >= 0.75:
+            return "high"
+        elif confidence >= 0.60:
+            return "medium"
+        elif confidence >= 0.45:
+            return "low"
+        else:
+            return "very_low"
+
+    def _adjust_for_key_levels(
+        self,
+        stop_price: float,
+        entry_price: float,
+        direction: str,
+        key_levels: Dict[str, Any],
+    ) -> tuple[float, float, Optional[str]]:
+        """Adjust stop price to avoid placing it at obvious key levels.
+
+        Args:
+            stop_price: Calculated stop price
+            entry_price: Entry price
+            direction: Trade direction
+            key_levels: Dict with "supports", "resistances", "nearest_support", "nearest_resistance"
+
+        Returns:
+            Tuple of (adjusted_stop, adjustment_amount, reason_string)
+        """
+        supports = key_levels.get("supports", [])
+        resistances = key_levels.get("resistances", [])
+        nearest_support = key_levels.get("nearest_support")
+        nearest_resistance = key_levels.get("nearest_resistance")
+
+        # Combine all levels
+        all_levels = []
+        if supports:
+            all_levels.extend([s.get("price", 0) if isinstance(s, dict) else s for s in supports])
+        if resistances:
+            all_levels.extend([r.get("price", 0) if isinstance(r, dict) else r for r in resistances])
+        if nearest_support:
+            level = nearest_support.get("price", 0) if isinstance(nearest_support, dict) else nearest_support
+            if level > 0:
+                all_levels.append(level)
+        if nearest_resistance:
+            level = nearest_resistance.get("price", 0) if isinstance(nearest_resistance, dict) else nearest_resistance
+            if level > 0:
+                all_levels.append(level)
+
+        if not all_levels:
+            return stop_price, 0.0, None
+
+        # Check if stop is too close to any key level
+        buffer = entry_price * self.KEY_LEVEL_BUFFER_PCT
+
+        for level in all_levels:
+            if level <= 0:
+                continue
+
+            distance_to_level = abs(stop_price - level)
+
+            # If stop is within buffer distance of a key level
+            if distance_to_level < buffer * 2:
+                # Adjust stop to be beyond the key level
+                if direction == "long":
+                    # For longs, stop is below entry - push it below the support level
+                    if level < entry_price:  # This is a support level
+                        new_stop = level - buffer
+                        adjustment = stop_price - new_stop
+                        return new_stop, adjustment, f"Stop moved {adjustment:.2f} below support at {level:.2f}"
+                else:  # short
+                    # For shorts, stop is above entry - push it above the resistance level
+                    if level > entry_price:  # This is a resistance level
+                        new_stop = level + buffer
+                        adjustment = new_stop - stop_price
+                        return new_stop, adjustment, f"Stop moved {adjustment:.2f} above resistance at {level:.2f}"
+
+        return stop_price, 0.0, None
+
+
+@dataclass
 class Position:
     """Current portfolio position."""
     symbol: str
@@ -125,6 +422,14 @@ class PortfolioManagerAgent(BaseAgent):
         # Portfolio state
         self.portfolio = PortfolioState()
         self.trade_history: List[Dict[str, Any]] = []
+
+        # Dynamic Stop Loss Calculator
+        self.stop_loss_calculator = DynamicStopLossCalculator(
+            base_atr_multiplier=config.get("base_atr_multiplier", 2.0),
+            min_rr_ratio=config.get("min_rr_ratio", 1.25),
+            max_stop_distance_pct=config.get("max_stop_distance_pct", 0.05),
+            min_stop_distance_pct=config.get("min_stop_distance_pct", 0.005),
+        )
 
         # Correlation groups (simplified)
         self.correlation_groups = {
@@ -275,13 +580,38 @@ class PortfolioManagerAgent(BaseAgent):
         # Evaluate portfolio impact
         impact = self._evaluate_portfolio_impact(proposal)
 
-        # Make final decision
+        # Get key levels from context for stop loss optimization
+        key_levels = context.get("key_levels", {})
+
+        # Also add nearest S/R to key_levels if available
+        if context.get("nearest_support"):
+            if "supports" not in key_levels:
+                key_levels["supports"] = []
+            key_levels["nearest_support"] = context.get("nearest_support")
+        if context.get("nearest_resistance"):
+            if "resistances" not in key_levels:
+                key_levels["resistances"] = []
+            key_levels["nearest_resistance"] = context.get("nearest_resistance")
+
+        # Get ATR from multiple sources (for dynamic stop calculation)
+        atr = None
+        # 1. Try to get from proposal (strategies like Turtle include n_value/ATR)
+        if proposal:
+            atr = proposal.get("atr") or proposal.get("n_value")
+        # 2. Try to get from market data indicators
+        if not atr and market_data:
+            indicators = market_data.get("indicators", {})
+            atr = indicators.get("atr") or indicators.get("atr_14")
+
+        # Make final decision with dynamic stop loss
         plan = self._make_execution_decision(
             proposal=proposal,
             signal_confidence=signal_confidence,
             confidence_threshold=confidence_threshold,
             impact=impact,
             regime=regime,
+            key_levels=key_levels,
+            atr=atr,
         )
 
         # Log AI decision
@@ -418,8 +748,10 @@ class PortfolioManagerAgent(BaseAgent):
         confidence_threshold: float,
         impact: Dict[str, Any],
         regime: Dict[str, Any],
+        key_levels: Optional[Dict[str, Any]] = None,
+        atr: Optional[float] = None,
     ) -> ExecutionPlan:
-        """Make final execution decision.
+        """Make final execution decision with dynamic stop loss.
 
         Args:
             proposal: Trade proposal
@@ -427,6 +759,8 @@ class PortfolioManagerAgent(BaseAgent):
             confidence_threshold: Dynamic threshold
             impact: Portfolio impact analysis
             regime: Market regime
+            key_levels: Support/resistance levels from context
+            atr: Average True Range for volatility-based stops
 
         Returns:
             ExecutionPlan with final decision
@@ -439,8 +773,8 @@ class PortfolioManagerAgent(BaseAgent):
         entry_price = proposal.get("price", 0)
         original_stop = proposal.get("stop_price")
         original_target = proposal.get("target_price")
-        adjusted_stop = original_stop
-        adjusted_target = original_target
+        action = proposal.get("action", "buy").lower()
+        direction = "long" if action == "buy" else "short"
 
         # Rule 1: Confidence check
         if signal_confidence < confidence_threshold:
@@ -509,49 +843,53 @@ class PortfolioManagerAgent(BaseAgent):
                 portfolio_impact=impact,
             )
 
-        # Rule 5: Regime-specific adjustments
+        # Rule 5: Regime-specific size adjustments
         if regime.get("volatility") == "high":
             adjusted_size = adjusted_size * 0.7
             reasoning_parts.append("Reduced size by 30% due to high volatility")
 
-            # Widen stop loss in high volatility (add 20% buffer)
-            if adjusted_stop and entry_price:
-                action = proposal.get("action", "buy")
-                if action == "buy":
-                    # For long, stop is below entry
-                    stop_distance = entry_price - adjusted_stop
-                    adjusted_stop = entry_price - (stop_distance * 1.2)
-                else:
-                    # For short, stop is above entry
-                    stop_distance = adjusted_stop - entry_price
-                    adjusted_stop = entry_price + (stop_distance * 1.2)
-                reasoning_parts.append("Widened SL by 20% for high volatility")
+        # =====================================================================
+        # DYNAMIC STOP LOSS CALCULATION
+        # This replaces the old fixed stop loss logic with confidence-scaled,
+        # volatility-adaptive, key-level-aware stop loss calculation
+        # =====================================================================
+        if entry_price > 0:
+            # Calculate dynamic stop loss and target
+            sl_result = self.stop_loss_calculator.calculate(
+                entry_price=entry_price,
+                direction=direction,
+                confidence=signal_confidence,
+                atr=atr,
+                regime_volatility=regime.get("volatility", "medium"),
+                key_levels=key_levels,
+                original_stop=original_stop,
+                original_target=original_target,
+            )
 
-        # Rule 6: Adjust TP/SL based on confidence
-        if entry_price and signal_confidence > 0.8:
-            # High confidence - can use tighter stop and wider target
-            if adjusted_target:
-                target_distance = abs(adjusted_target - entry_price)
-                action = proposal.get("action", "buy")
-                if action == "buy":
-                    adjusted_target = entry_price + (target_distance * 1.15)
-                else:
-                    adjusted_target = entry_price - (target_distance * 1.15)
-                reasoning_parts.append("Extended TP by 15% due to high confidence")
+            adjusted_stop = sl_result.stop_price
+            adjusted_target = sl_result.target_price
 
-        # Rule 7: Ensure minimum risk/reward ratio of 1.5:1
-        if adjusted_stop and adjusted_target and entry_price:
-            risk = abs(entry_price - adjusted_stop)
-            reward = abs(adjusted_target - entry_price)
-            if risk > 0 and reward / risk < 1.5:
-                # Adjust target to meet minimum R:R
-                action = proposal.get("action", "buy")
-                min_reward = risk * 1.5
-                if action == "buy":
-                    adjusted_target = entry_price + min_reward
-                else:
-                    adjusted_target = entry_price - min_reward
-                reasoning_parts.append(f"Adjusted TP to maintain 1.5:1 R:R ratio")
+            # Log the dynamic stop loss details
+            reasoning_parts.append(
+                f"Dynamic SL: {sl_result.reasoning}"
+            )
+            reasoning_parts.append(
+                f"R:R={sl_result.risk_reward_ratio:.2f}:1, "
+                f"Stop={sl_result.stop_distance_pct:.2%}, "
+                f"Target={sl_result.target_distance_pct:.2%}"
+            )
+
+            # Validate R:R is acceptable
+            if sl_result.risk_reward_ratio < self.stop_loss_calculator.min_rr_ratio:
+                reasoning_parts.append(
+                    f"R:R ratio ({sl_result.risk_reward_ratio:.2f}) below minimum ({self.stop_loss_calculator.min_rr_ratio})"
+                )
+                # Still proceed but note the concern
+        else:
+            # No entry price - use original values
+            adjusted_stop = original_stop
+            adjusted_target = original_target
+            reasoning_parts.append("No entry price - using original SL/TP")
 
         # All checks passed
         reasoning_parts.append(
