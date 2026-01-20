@@ -99,7 +99,9 @@ class AgentOrchestrator:
             Trading signal if agents agree, None otherwise
         """
         account_info = market_data.get("account_info", {})
+        symbol = market_data.get("symbol", "BTCUSDT")
         context = {
+            "symbol": symbol,  # IMPORTANT: Symbol must be in context for strategy tracking
             "market_data": market_data,
             "timestamp": market_data.get("timestamp"),
             "account_info": account_info,
