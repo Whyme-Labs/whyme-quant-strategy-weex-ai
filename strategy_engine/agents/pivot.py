@@ -10,6 +10,7 @@ Based on classic floor trader techniques:
 """
 
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from loguru import logger
 from enum import Enum
 from dataclasses import dataclass
 import numpy as np
@@ -108,17 +109,10 @@ class PivotAgent(BaseAgent):
         self.indicators_service = indicators_service
         self.market_data_service = market_data_service
 
-        # Daily OHLC for pivot calculation
-        self.daily_high: Optional[float] = None
-        self.daily_low: Optional[float] = None
-        self.daily_close: Optional[float] = None
-
-        self.price_history: List[float] = []
-        self.high_history: List[float] = []
-        self.low_history: List[float] = []
-
-        # Cached pivot levels
-        self._pivot_levels: Optional[PivotLevels] = None
+        # Per-symbol caching (CRITICAL: Each symbol needs its own data)
+        # Without this, BTC pivot levels would be used for SOL, ETH, etc.
+        self._symbol_data: Dict[str, Dict[str, Any]] = {}
+        # Structure: {symbol: {"pivot_levels": PivotLevels, "price_history": [...], ...}}
 
     def set_daily_ohlc(self, high: float, low: float, close: float):
         """Set previous day's OHLC for pivot calculation.
@@ -133,6 +127,24 @@ class PivotAgent(BaseAgent):
         self.daily_close = close
         self._pivot_levels = self._calculate_pivots(high, low, close)
 
+    def _get_symbol_data(self, symbol: str) -> Dict[str, Any]:
+        """Get or initialize per-symbol data.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            Symbol-specific data dictionary
+        """
+        if symbol not in self._symbol_data:
+            self._symbol_data[symbol] = {
+                "pivot_levels": None,
+                "price_history": [],
+                "high_history": [],
+                "low_history": [],
+            }
+        return self._symbol_data[symbol]
+
     async def process(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Process market data and generate pivot signals.
 
@@ -140,6 +152,7 @@ class PivotAgent(BaseAgent):
             context: Dictionary containing:
                 - market_data: Current market data with candles
                 - regime: Current market regime
+                - symbol: Trading symbol (CRITICAL for per-symbol pivot levels)
 
         Returns:
             Dictionary with signal details
@@ -147,35 +160,45 @@ class PivotAgent(BaseAgent):
         market_data = context.get("market_data", {})
         regime = context.get("regime", {})
 
+        # CRITICAL: Get symbol to ensure per-symbol pivot levels
+        symbol = context.get("symbol") or market_data.get("symbol", "UNKNOWN")
+        if symbol == "UNKNOWN":
+            logger.warning("Pivot: No symbol provided in context!")
+
+        # Get per-symbol data
+        sym_data = self._get_symbol_data(symbol)
+
         current_price = market_data.get("price", 0)
         high = market_data.get("high_24h", current_price)
         low = market_data.get("low_24h", current_price)
 
-        # Update history from ticker
+        # Update per-symbol history from ticker
         if current_price > 0:
-            self.price_history.append(current_price)
-            self.high_history.append(high)
-            self.low_history.append(low)
+            sym_data["price_history"].append(current_price)
+            sym_data["high_history"].append(high)
+            sym_data["low_history"].append(low)
 
             # Keep limited history
             max_len = 100
-            if len(self.price_history) > max_len:
-                self.price_history = self.price_history[-max_len:]
-                self.high_history = self.high_history[-max_len:]
-                self.low_history = self.low_history[-max_len:]
+            if len(sym_data["price_history"]) > max_len:
+                sym_data["price_history"] = sym_data["price_history"][-max_len:]
+                sym_data["high_history"] = sym_data["high_history"][-max_len:]
+                sym_data["low_history"] = sym_data["low_history"][-max_len:]
 
         # Calculate pivots from candle data (preferred) or 24h data
-        if self._pivot_levels is None:
+        # ALWAYS recalculate if None for this specific symbol
+        if sym_data["pivot_levels"] is None:
             # Try daily candles first
             candles_1d = market_data.get("candles_1d", [])
             if candles_1d and len(candles_1d) >= 2:
                 # Use previous completed candle
                 prev_candle = candles_1d[-2]
-                self._pivot_levels = self._calculate_pivots(
+                sym_data["pivot_levels"] = self._calculate_pivots(
                     float(prev_candle.get("high", 0)),
                     float(prev_candle.get("low", 0)),
                     float(prev_candle.get("close", 0))
                 )
+                logger.debug(f"Pivot [{symbol}]: Calculated from 1D candles. P={sym_data['pivot_levels'].pivot:.2f}")
             # Fallback to 4h candles
             elif market_data.get("candles_4h") and len(market_data.get("candles_4h", [])) >= 6:
                 candles_4h = market_data.get("candles_4h", [])
@@ -183,26 +206,31 @@ class PivotAgent(BaseAgent):
                 period_high = max(float(c.get("high", 0)) for c in candles_4h[-6:])
                 period_low = min(float(c.get("low", 0)) for c in candles_4h[-6:])
                 period_close = float(candles_4h[-1].get("close", 0))
-                self._pivot_levels = self._calculate_pivots(period_high, period_low, period_close)
+                sym_data["pivot_levels"] = self._calculate_pivots(period_high, period_low, period_close)
+                logger.debug(f"Pivot [{symbol}]: Calculated from 4H candles. P={sym_data['pivot_levels'].pivot:.2f}")
             # Fallback to 24h high/low from ticker
             elif high > 0 and low > 0 and current_price > 0:
-                self._pivot_levels = self._calculate_pivots(high, low, current_price)
+                sym_data["pivot_levels"] = self._calculate_pivots(high, low, current_price)
+                logger.debug(f"Pivot [{symbol}]: Calculated from 24H ticker. P={sym_data['pivot_levels'].pivot:.2f}")
 
-        if self._pivot_levels is None:
+        pivot_levels = sym_data["pivot_levels"]
+        price_history = sym_data["price_history"]
+
+        if pivot_levels is None:
             return {
                 "signal": None,
-                "reasoning": "Pivot levels not yet calculated. Need candle or 24h data."
+                "reasoning": f"[{symbol}] Pivot levels not yet calculated. Need candle or 24h data."
             }
 
         # Check if we have enough data
-        if len(self.price_history) < 5:
+        if len(price_history) < 5:
             return {
                 "signal": None,
-                "reasoning": f"Insufficient data: {len(self.price_history)}/5 periods"
+                "reasoning": f"[{symbol}] Insufficient data: {len(price_history)}/5 periods"
             }
 
-        # Generate signals
-        signal = self._generate_signal(current_price, regime)
+        # Generate signals using per-symbol data
+        signal = self._generate_signal_for_symbol(symbol, current_price, pivot_levels, price_history, regime)
 
         # Log AI decision
         ai_logger = get_ai_logger()
@@ -210,15 +238,16 @@ class PivotAgent(BaseAgent):
             stage=STAGE_STRATEGY_GENERATION,
             model="pivot_v1",
             input_data={
+                "symbol": symbol,
                 "price": current_price,
                 "high": high,
                 "low": low,
                 "pivot_levels": {
-                    "pivot": self._pivot_levels.pivot,
-                    "r1": self._pivot_levels.r1,
-                    "r2": self._pivot_levels.r2,
-                    "s1": self._pivot_levels.s1,
-                    "s2": self._pivot_levels.s2,
+                    "pivot": pivot_levels.pivot,
+                    "r1": pivot_levels.r1,
+                    "r2": pivot_levels.r2,
+                    "s1": pivot_levels.s1,
+                    "s2": pivot_levels.s2,
                 },
                 "regime": regime,
             },
@@ -235,6 +264,7 @@ class PivotAgent(BaseAgent):
         if signal and signal.direction != "none":
             return {
                 "signal": {
+                    "symbol": symbol,
                     "strategy": "pivot",
                     "direction": signal.direction,
                     "signal_type": signal.signal_type.value,
@@ -254,17 +284,76 @@ class PivotAgent(BaseAgent):
                 "reasoning": signal.reasoning if signal else "No signal"
             }
 
-    def _auto_calculate_pivots(self):
-        """Auto-calculate pivots from recent price history."""
-        if len(self.high_history) < 24:
-            return
+    def _generate_signal_for_symbol(
+        self,
+        symbol: str,
+        current_price: float,
+        pivots: PivotLevels,
+        price_history: List[float],
+        regime: Dict[str, Any],
+    ) -> Optional[PivotSignal]:
+        """Generate pivot signal for a specific symbol.
 
-        # Use last 24 hours as "previous period"
-        period_high = max(self.high_history[-24:])
-        period_low = min(self.low_history[-24:])
-        period_close = self.price_history[-24]  # Close 24 hours ago
+        Args:
+            symbol: Trading symbol
+            current_price: Current price
+            pivots: Per-symbol pivot levels
+            price_history: Per-symbol price history
+            regime: Market regime
 
-        self._pivot_levels = self._calculate_pivots(period_high, period_low, period_close)
+        Returns:
+            PivotSignal
+        """
+        prices = np.array(price_history)
+
+        # Get price momentum direction
+        if len(prices) >= 3:
+            recent_direction = "up" if prices[-1] > prices[-3] else "down"
+        else:
+            recent_direction = "neutral"
+
+        signals = []
+
+        # 1. Check support bounces (long signals)
+        support_signal = self._check_support_bounce(current_price, pivots, prices, recent_direction)
+        if support_signal:
+            signals.append(support_signal)
+
+        # 2. Check resistance rejects (short signals)
+        resistance_signal = self._check_resistance_reject(current_price, pivots, prices, recent_direction)
+        if resistance_signal:
+            signals.append(resistance_signal)
+
+        # 3. Check breakouts above resistance
+        breakout_signal = self._check_breakout_above(current_price, pivots, prices)
+        if breakout_signal:
+            signals.append(breakout_signal)
+
+        # 4. Check breakdowns below support
+        breakdown_signal = self._check_breakdown_below(current_price, pivots, prices)
+        if breakdown_signal:
+            signals.append(breakdown_signal)
+
+        # 5. Check main pivot bounce
+        pivot_signal = self._check_pivot_bounce(current_price, pivots, prices, recent_direction)
+        if pivot_signal:
+            signals.append(pivot_signal)
+
+        # Return best signal (prioritize by position size which reflects confidence)
+        if signals:
+            return max(signals, key=lambda s: s.position_size_pct)
+
+        return PivotSignal(
+            direction="none",
+            signal_type=PivotSignalType.SUPPORT_BOUNCE,
+            entry_price=current_price,
+            stop_price=0,
+            target_price=0,
+            position_size_pct=0,
+            pivot_level="none",
+            reasoning=f"[{symbol}] No pivot signal. Price at {current_price:.2f}, Pivot: {pivots.pivot:.2f}, S1: {pivots.s1:.2f}, R1: {pivots.r1:.2f}"
+        )
+
 
     def _calculate_pivots(self, high: float, low: float, close: float) -> PivotLevels:
         """Calculate pivot point levels.
@@ -317,71 +406,6 @@ class PivotAgent(BaseAgent):
             pivot=pivot,
             r1=r1, r2=r2, r3=r3,
             s1=s1, s2=s2, s3=s3
-        )
-
-    def _generate_signal(
-        self,
-        current_price: float,
-        regime: Dict[str, Any],
-    ) -> Optional[PivotSignal]:
-        """Generate pivot signal.
-
-        Args:
-            current_price: Current price
-            regime: Market regime
-
-        Returns:
-            PivotSignal
-        """
-        pivots = self._pivot_levels
-        prices = np.array(self.price_history)
-
-        # Get price momentum direction
-        if len(prices) >= 3:
-            recent_direction = "up" if prices[-1] > prices[-3] else "down"
-        else:
-            recent_direction = "neutral"
-
-        signals = []
-
-        # 1. Check support bounces (long signals)
-        support_signal = self._check_support_bounce(current_price, pivots, prices, recent_direction)
-        if support_signal:
-            signals.append(support_signal)
-
-        # 2. Check resistance rejects (short signals)
-        resistance_signal = self._check_resistance_reject(current_price, pivots, prices, recent_direction)
-        if resistance_signal:
-            signals.append(resistance_signal)
-
-        # 3. Check breakouts above resistance
-        breakout_signal = self._check_breakout_above(current_price, pivots, prices)
-        if breakout_signal:
-            signals.append(breakout_signal)
-
-        # 4. Check breakdowns below support
-        breakdown_signal = self._check_breakdown_below(current_price, pivots, prices)
-        if breakdown_signal:
-            signals.append(breakdown_signal)
-
-        # 5. Check main pivot bounce
-        pivot_signal = self._check_pivot_bounce(current_price, pivots, prices, recent_direction)
-        if pivot_signal:
-            signals.append(pivot_signal)
-
-        # Return best signal (prioritize by position size which reflects confidence)
-        if signals:
-            return max(signals, key=lambda s: s.position_size_pct)
-
-        return PivotSignal(
-            direction="none",
-            signal_type=PivotSignalType.SUPPORT_BOUNCE,
-            entry_price=current_price,
-            stop_price=0,
-            target_price=0,
-            position_size_pct=0,
-            pivot_level="none",
-            reasoning=f"No pivot signal. Price at {current_price:.2f}, Pivot: {pivots.pivot:.2f}, S1: {pivots.s1:.2f}, R1: {pivots.r1:.2f}"
         )
 
     def _check_support_bounce(
@@ -583,21 +607,39 @@ class PivotAgent(BaseAgent):
 
         return None
 
-    def get_pivot_levels(self) -> Optional[Dict[str, float]]:
-        """Get current pivot levels.
+    def get_pivot_levels(self, symbol: str = "BTCUSDT") -> Optional[Dict[str, float]]:
+        """Get current pivot levels for a symbol.
+
+        Args:
+            symbol: Trading symbol
 
         Returns:
             Dictionary of pivot levels or None
         """
-        if self._pivot_levels is None:
+        if symbol not in self._symbol_data or self._symbol_data[symbol]["pivot_levels"] is None:
             return None
 
+        pivot_levels = self._symbol_data[symbol]["pivot_levels"]
         return {
-            "pivot": self._pivot_levels.pivot,
-            "r1": self._pivot_levels.r1,
-            "r2": self._pivot_levels.r2,
-            "r3": self._pivot_levels.r3,
-            "s1": self._pivot_levels.s1,
-            "s2": self._pivot_levels.s2,
-            "s3": self._pivot_levels.s3,
+            "pivot": pivot_levels.pivot,
+            "r1": pivot_levels.r1,
+            "r2": pivot_levels.r2,
+            "r3": pivot_levels.r3,
+            "s1": pivot_levels.s1,
+            "s2": pivot_levels.s2,
+            "s3": pivot_levels.s3,
         }
+
+    def clear_symbol_data(self, symbol: str = None):
+        """Clear cached data for a symbol or all symbols.
+
+        Args:
+            symbol: Specific symbol to clear, or None to clear all
+        """
+        if symbol:
+            if symbol in self._symbol_data:
+                del self._symbol_data[symbol]
+                logger.info(f"Pivot: Cleared cache for {symbol}")
+        else:
+            self._symbol_data.clear()
+            logger.info("Pivot: Cleared all symbol caches")

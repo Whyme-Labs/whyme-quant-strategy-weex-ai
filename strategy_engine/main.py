@@ -724,9 +724,8 @@ class StrategyEngine:
                             signal_fields = {}
                             for strategy_name, has_signal, reasoning in analyses:
                                 if has_signal:
-                                    # Only show strategies with signals
-                                    short_reasoning = reasoning[:80] + "..." if len(reasoning) > 80 else reasoning
-                                    signal_fields[f"✅ {strategy_name}"] = short_reasoning
+                                    # Show full reasoning (no truncation)
+                                    signal_fields[f"✅ {strategy_name}"] = reasoning
 
                             await self.discord.send_trace(
                                 f"📊 {symbol}",
