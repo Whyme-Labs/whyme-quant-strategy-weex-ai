@@ -7,14 +7,18 @@ Determines whether to execute trades based on:
 3. Dynamic confidence thresholds
 4. Correlation with existing positions
 5. Risk budget allocation
+6. Signal deduplication (prevents same signal firing repeatedly)
 
 "A signal is just a suggestion. Portfolio context determines execution."
 """
 
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
+import hashlib
 import numpy as np
+from loguru import logger
 
 from .base_agent import BaseAgent
 from ai_logging import get_ai_logger, STAGE_RISK_ASSESSMENT
@@ -66,6 +70,18 @@ class ExecutionPlan:
     portfolio_impact: Dict[str, Any]
 
 
+@dataclass
+class SignalSignature:
+    """Signature of a trading signal for deduplication."""
+    signature_hash: str
+    symbol: str
+    strategy: str
+    direction: str
+    timeframe: str
+    executed_at: datetime
+    reasoning_summary: str
+
+
 class PortfolioManagerAgent(BaseAgent):
     """Portfolio Manager - The execution gatekeeper.
 
@@ -115,6 +131,16 @@ class PortfolioManagerAgent(BaseAgent):
             "btc_related": ["BTCUSDT", "BTCUSD"],
             "eth_related": ["ETHUSDT", "ETHUSD"],
             "major_alts": ["SOLUSDT", "AVAXUSDT", "DOTUSDT"],
+        }
+
+        # Signal deduplication tracking
+        # Prevents same signal from firing repeatedly
+        self._executed_signals: Dict[str, SignalSignature] = {}  # hash -> signature
+        self._signal_cooldowns = {
+            "1h": timedelta(hours=2),    # 1H signals: 2 hour cooldown
+            "4h": timedelta(hours=8),    # 4H signals: 8 hour cooldown
+            "1d": timedelta(hours=24),   # 1D signals: 24 hour cooldown
+            "default": timedelta(hours=4),
         }
 
     async def process(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,6 +255,17 @@ class PortfolioManagerAgent(BaseAgent):
                 "reasoning": "No active signal to evaluate",
             }
 
+        # Check 5: Signal Deduplication
+        # Prevents the same signal from executing multiple times within cooldown window
+        is_duplicate, duplicate_reason = self._is_duplicate_signal(proposal)
+        if is_duplicate:
+            logger.warning(f"PORTFOLIO MANAGER: {duplicate_reason}")
+            return {
+                "decision": ExecutionDecision.REJECT.value,
+                "approved": False,
+                "reasoning": duplicate_reason,
+            }
+
         # Calculate dynamic confidence threshold
         confidence_threshold = self._calculate_dynamic_threshold(regime)
 
@@ -267,9 +304,14 @@ class PortfolioManagerAgent(BaseAgent):
             explanation=plan.reasoning,
         )
 
+        # Record executed signal for deduplication if approved
+        is_approved = plan.decision in [ExecutionDecision.EXECUTE, ExecutionDecision.REDUCE_SIZE]
+        if is_approved:
+            self._record_executed_signal(proposal)
+
         return {
             "decision": plan.decision.value,
-            "approved": plan.decision in [ExecutionDecision.EXECUTE, ExecutionDecision.REDUCE_SIZE],
+            "approved": is_approved,
             "adjusted_size": plan.adjusted_size,
             "adjusted_stop_price": plan.adjusted_stop_price,
             "adjusted_target_price": plan.adjusted_target_price,
@@ -627,3 +669,247 @@ class PortfolioManagerAgent(BaseAgent):
                 self.portfolio.max_drawdown_today,
                 drawdown
             )
+
+    # =========================================================================
+    # SIGNAL DEDUPLICATION METHODS
+    # =========================================================================
+
+    def _generate_signal_signature(self, proposal: Dict[str, Any]) -> str:
+        """Generate a unique signature hash for a trading signal.
+
+        The signature is based on:
+        - Symbol
+        - Strategy
+        - Direction (buy/sell)
+        - Timeframe
+        - Key reasoning elements (normalized)
+
+        Args:
+            proposal: Trade proposal
+
+        Returns:
+            SHA256 hash of the signal signature
+        """
+        symbol = proposal.get("symbol", "UNKNOWN")
+        strategy = proposal.get("strategy", "unknown")
+        action = proposal.get("action", "hold").lower()
+        timeframe = proposal.get("timeframe", "4h")
+        reasoning = proposal.get("reason", "") or proposal.get("explanation", "")
+
+        # Normalize reasoning - extract key indicator values
+        # This prevents minor price changes from creating new signatures
+        reasoning_normalized = self._normalize_reasoning(reasoning)
+
+        # Create signature string
+        signature_parts = [
+            symbol.upper(),
+            strategy.lower(),
+            action,
+            timeframe.lower(),
+            reasoning_normalized,
+        ]
+        signature_str = "|".join(signature_parts)
+
+        # Generate hash
+        return hashlib.sha256(signature_str.encode()).hexdigest()[:16]
+
+    def _normalize_reasoning(self, reasoning: str) -> str:
+        """Normalize reasoning to extract key signal components.
+
+        Removes specific price values but keeps indicator states.
+
+        Args:
+            reasoning: Raw reasoning string
+
+        Returns:
+            Normalized reasoning string
+        """
+        if not reasoning:
+            return "none"
+
+        # Convert to lowercase
+        text = reasoning.lower()
+
+        # Extract key signal components (without specific values)
+        components = []
+
+        # RSI states
+        if "rsi" in text:
+            if "oversold" in text:
+                components.append("rsi_oversold")
+            elif "overbought" in text:
+                components.append("rsi_overbought")
+            else:
+                components.append("rsi_signal")
+
+        # Bollinger Band states
+        if "bollinger" in text or "bb" in text:
+            if "below" in text or "lower" in text:
+                components.append("bb_lower")
+            elif "above" in text or "upper" in text:
+                components.append("bb_upper")
+
+        # MACD states
+        if "macd" in text:
+            if "bullish" in text or "cross" in text:
+                components.append("macd_bullish")
+            elif "bearish" in text:
+                components.append("macd_bearish")
+
+        # Trend states
+        if "trend" in text:
+            if "uptrend" in text or "bullish" in text:
+                components.append("trend_up")
+            elif "downtrend" in text or "bearish" in text:
+                components.append("trend_down")
+
+        # Breakout signals
+        if "breakout" in text:
+            if "bullish" in text or "upside" in text:
+                components.append("breakout_up")
+            elif "bearish" in text or "downside" in text:
+                components.append("breakout_down")
+            else:
+                components.append("breakout")
+
+        # Pattern signals
+        patterns = ["vcp", "head", "shoulder", "double", "flag", "wedge", "triangle"]
+        for pattern in patterns:
+            if pattern in text:
+                components.append(f"pattern_{pattern}")
+
+        # Support/Resistance
+        if "support" in text:
+            components.append("support")
+        if "resistance" in text:
+            components.append("resistance")
+
+        # Pivot signals
+        if "pivot" in text:
+            components.append("pivot")
+
+        # Momentum signals
+        if "momentum" in text:
+            components.append("momentum")
+
+        # Volume signals
+        if "volume" in text:
+            if "surge" in text or "spike" in text:
+                components.append("volume_surge")
+            else:
+                components.append("volume")
+
+        # If no components found, use a hash of first 50 chars
+        if not components:
+            return hashlib.md5(text[:50].encode()).hexdigest()[:8]
+
+        return "_".join(sorted(set(components)))
+
+    def _is_duplicate_signal(self, proposal: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+        """Check if a signal is a duplicate of a recently executed signal.
+
+        Args:
+            proposal: Trade proposal
+
+        Returns:
+            Tuple of (is_duplicate, reason_string)
+        """
+        signature_hash = self._generate_signal_signature(proposal)
+        timeframe = proposal.get("timeframe", "4h").lower()
+        cooldown = self._signal_cooldowns.get(timeframe, self._signal_cooldowns["default"])
+
+        # Clean up old signatures first
+        self._cleanup_old_signatures()
+
+        # Check if this signature exists and is within cooldown
+        if signature_hash in self._executed_signals:
+            sig = self._executed_signals[signature_hash]
+            time_since = datetime.now() - sig.executed_at
+            remaining = cooldown - time_since
+
+            if remaining.total_seconds() > 0:
+                # Still in cooldown
+                hours_remaining = remaining.total_seconds() / 3600
+                return True, (
+                    f"DUPLICATE SIGNAL BLOCKED: Same {sig.strategy} signal on {sig.symbol} "
+                    f"({sig.direction}) executed {time_since.total_seconds()/60:.0f}m ago. "
+                    f"Cooldown: {hours_remaining:.1f}h remaining. "
+                    f"Reasoning: {sig.reasoning_summary[:50]}..."
+                )
+
+        return False, None
+
+    def _record_executed_signal(self, proposal: Dict[str, Any]):
+        """Record a signal as executed for deduplication tracking.
+
+        Args:
+            proposal: Trade proposal that was executed
+        """
+        signature_hash = self._generate_signal_signature(proposal)
+        symbol = proposal.get("symbol", "UNKNOWN")
+        strategy = proposal.get("strategy", "unknown")
+        action = proposal.get("action", "hold")
+        timeframe = proposal.get("timeframe", "4h")
+        reasoning = proposal.get("reason", "") or proposal.get("explanation", "")
+
+        self._executed_signals[signature_hash] = SignalSignature(
+            signature_hash=signature_hash,
+            symbol=symbol,
+            strategy=strategy,
+            direction=action,
+            timeframe=timeframe,
+            executed_at=datetime.now(),
+            reasoning_summary=self._normalize_reasoning(reasoning),
+        )
+
+        logger.info(
+            f"DEDUP: Recorded signal signature {signature_hash[:8]} | "
+            f"{strategy} {symbol} {action} ({timeframe}) | "
+            f"Cooldown: {self._signal_cooldowns.get(timeframe.lower(), self._signal_cooldowns['default'])}"
+        )
+
+    def _cleanup_old_signatures(self):
+        """Remove signatures that are past their maximum cooldown period."""
+        max_age = timedelta(hours=48)  # Keep signatures for max 48 hours
+        now = datetime.now()
+
+        expired = [
+            sig_hash for sig_hash, sig in self._executed_signals.items()
+            if (now - sig.executed_at) > max_age
+        ]
+
+        for sig_hash in expired:
+            del self._executed_signals[sig_hash]
+
+        if expired:
+            logger.debug(f"DEDUP: Cleaned up {len(expired)} expired signal signatures")
+
+    def get_active_signatures(self) -> List[Dict[str, Any]]:
+        """Get list of currently active (non-expired) signal signatures.
+
+        Returns:
+            List of signature info dicts
+        """
+        self._cleanup_old_signatures()
+        now = datetime.now()
+
+        result = []
+        for sig in self._executed_signals.values():
+            timeframe = sig.timeframe.lower()
+            cooldown = self._signal_cooldowns.get(timeframe, self._signal_cooldowns["default"])
+            time_since = now - sig.executed_at
+            remaining = cooldown - time_since
+
+            if remaining.total_seconds() > 0:
+                result.append({
+                    "signature": sig.signature_hash[:8],
+                    "symbol": sig.symbol,
+                    "strategy": sig.strategy,
+                    "direction": sig.direction,
+                    "timeframe": sig.timeframe,
+                    "executed_at": sig.executed_at.isoformat(),
+                    "cooldown_remaining_hours": remaining.total_seconds() / 3600,
+                    "reasoning": sig.reasoning_summary,
+                })
+
+        return result
