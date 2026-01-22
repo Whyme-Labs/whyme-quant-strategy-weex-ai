@@ -376,12 +376,15 @@ class AgentOrchestrator:
                 # Send Discord notification for LLM rejection
                 if self.discord:
                     asyncio.create_task(self.discord.send_trace(
-                        f"🤖 **LLM REJECTED Signal**\n"
-                        f"**Symbol:** {symbol}\n"
-                        f"**Action:** {action}\n"
-                        f"**Strategy:** {context['strategy_proposal'].get('strategy', 'unknown')}\n"
-                        f"**Confidence Adj:** {llm_result.confidence_adjustment:+.2f}\n"
-                        f"**Reason:** {llm_result.reasoning[:200]}"
+                        stage="LLM Signal Validation",
+                        details=f"🤖 REJECTED {symbol} {action}",
+                        data={
+                            "symbol": symbol,
+                            "action": action,
+                            "strategy": context['strategy_proposal'].get('strategy', 'unknown'),
+                            "confidence_adj": f"{llm_result.confidence_adjustment:+.2f}",
+                            "reason": llm_result.reasoning[:300],
+                        }
                     ))
             elif llm_result.decision in [LLMDecision.APPROVE, LLMDecision.DEFER]:
                 # LLM approved or deferred - apply confidence adjustment
@@ -408,12 +411,15 @@ class AgentOrchestrator:
                     # Send Discord notification for LLM approval
                     if self.discord:
                         asyncio.create_task(self.discord.send_trace(
-                            f"✅ **LLM APPROVED Signal**\n"
-                            f"**Symbol:** {symbol}\n"
-                            f"**Action:** {action}\n"
-                            f"**Strategy:** {context['strategy_proposal'].get('strategy', 'unknown')}\n"
-                            f"**Confidence:** {original_confidence:.0%} → {new_confidence:.0%}\n"
-                            f"**Reason:** {llm_result.reasoning[:200]}"
+                            stage="LLM Signal Validation",
+                            details=f"✅ APPROVED {symbol} {action}",
+                            data={
+                                "symbol": symbol,
+                                "action": action,
+                                "strategy": context['strategy_proposal'].get('strategy', 'unknown'),
+                                "confidence": f"{original_confidence:.0%} → {new_confidence:.0%}",
+                                "reason": llm_result.reasoning[:300],
+                            }
                         ))
 
         # Stage 3: Portfolio Management (dynamic confidence threshold)
@@ -455,11 +461,14 @@ class AgentOrchestrator:
                             # Send Discord notification for LLM override
                             if self.discord:
                                 asyncio.create_task(self.discord.send_trace(
-                                    f"🔄 **LLM OVERRIDE APPROVED**\n"
-                                    f"**Symbol:** {symbol}\n"
-                                    f"**Action:** {context['strategy_proposal'].get('action', 'unknown').upper()}\n"
-                                    f"**Original Rejection:** {rejection_reason[:100]}\n"
-                                    f"**Override Reason:** {override_result.override_reason or 'LLM sees opportunity'}"
+                                    stage="LLM Override Review",
+                                    details=f"🔄 OVERRIDE APPROVED {symbol}",
+                                    data={
+                                        "symbol": symbol,
+                                        "action": context['strategy_proposal'].get('action', 'unknown').upper(),
+                                        "original_rejection": rejection_reason[:150],
+                                        "override_reason": override_result.override_reason or 'LLM sees opportunity',
+                                    }
                                 ))
 
                             # Mark signal as LLM override
