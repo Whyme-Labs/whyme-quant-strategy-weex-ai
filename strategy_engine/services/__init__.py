@@ -30,6 +30,7 @@ from .edge_scanner import EdgeScanner
 from .performance_tracker import PerformanceTracker
 from .key_level_detector import KeyLevelDetector
 from .smc_detector import SMCDetector
+from .llm_signal_validator import LLMSignalValidator, LLMValidationResult, LLMDecision
 
 __all__ = [
     "RedisClient",
@@ -48,4 +49,8 @@ __all__ = [
     "KeyLevelDetector",
     # Smart Money Concepts
     "SMCDetector",
+    # LLM Signal Validation
+    "LLMSignalValidator",
+    "LLMValidationResult",
+    "LLMDecision",
 ]

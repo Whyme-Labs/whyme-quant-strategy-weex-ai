@@ -327,6 +327,134 @@ Provide a brief reflection (2-3 sentences):
             logger.error(f"Trade outcome analysis failed: {e}")
             return f"Analysis unavailable: {str(e)}"
 
+    async def validate_trading_signal(
+        self,
+        signal: Dict[str, Any],
+        market_data: Dict[str, Any],
+        technical_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Validate a trading signal and provide decision with reasoning.
+
+        This method is used by the LLMSignalValidator service for comprehensive
+        signal validation with full override authority.
+
+        Args:
+            signal: Trading signal with action, confidence, price levels
+            market_data: Current market data (price, volume, regime)
+            technical_context: Technical indicators and analysis
+
+        Returns:
+            Dictionary with:
+                - decision: "approve" | "reject" | "override_approve" | "defer"
+                - confidence_adjustment: float (-0.3 to +0.3)
+                - reasoning: str
+                - risk_assessment: str
+                - key_factors: List[str]
+        """
+        if not self.api_key:
+            return {
+                "decision": "defer",
+                "confidence_adjustment": 0.0,
+                "reasoning": "LLM unavailable - API key not configured",
+                "risk_assessment": "",
+                "key_factors": [],
+            }
+
+        # Build validation prompt
+        symbol = signal.get("symbol", "BTCUSDT")
+        action = signal.get("action", "hold").upper()
+        strategy = signal.get("strategy", "unknown")
+        confidence = signal.get("confidence", 0.5)
+        price = market_data.get("price", 0)
+        regime = market_data.get("regime", {})
+
+        prompt = f"""
+Validate this trading signal:
+
+**Signal:**
+- Symbol: {symbol}
+- Action: {action}
+- Strategy: {strategy}
+- Confidence: {confidence*100:.0f}%
+- Entry Price: ${signal.get('price', price):,.2f}
+
+**Market Context:**
+- Current Price: ${price:,.2f}
+- 24h Change: {market_data.get('change_24h', 0):+.2f}%
+- Volatility: {regime.get('volatility', 'unknown')}
+- Trend: {regime.get('trend', 'unknown')}
+
+**Technical Context:**
+{json.dumps(technical_context, indent=2, default=str)[:500]}
+
+Decide: approve, reject, or defer?
+Provide confidence adjustment (-0.3 to +0.3).
+
+Respond in JSON:
+{{"decision": "approve|reject|defer", "confidence_adjustment": 0.0, "reasoning": "...", "risk_assessment": "...", "key_factors": ["...", "..."]}}
+"""
+
+        try:
+            client = await self._get_client()
+
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": self.http_referer,
+                "X-Title": self.app_name,
+            }
+
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a quantitative trading analyst. Validate signals concisely. Always respond in valid JSON.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                "max_tokens": 400,
+                "temperature": 0.2,
+            }
+
+            response = await client.post(
+                self.api_url,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                return json.loads(json_match.group())
+
+            # Fallback
+            return {
+                "decision": "defer",
+                "confidence_adjustment": 0.0,
+                "reasoning": content[:200],
+                "risk_assessment": "",
+                "key_factors": [],
+            }
+
+        except Exception as e:
+            logger.error(f"Signal validation failed: {e}")
+            return {
+                "decision": "defer",
+                "confidence_adjustment": 0.0,
+                "reasoning": f"Validation error: {str(e)[:50]}",
+                "risk_assessment": "",
+                "key_factors": [],
+            }
+
     async def extract_trading_patterns(
         self,
         trades_summary: str,

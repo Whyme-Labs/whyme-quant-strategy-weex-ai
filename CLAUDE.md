@@ -151,6 +151,12 @@ TRADING_SYMBOLS=BTCUSDT,ETHUSDT,SOLUSDT
 **Signal Confirmation Services (Integrated in Orchestrator):**
 7. **AlphaGenerator** - Used as signal confirmation (boosts confidence if aligned, rejects if strongly disagrees)
 8. **EdgeScanner** - Statistical edge confirmation (scans 12 edge types: mean reversion, trend, turtle, momentum, MACD, stochastic, ichimoku, supertrend, volume, patterns)
+9. **LLMSignalValidator** - AI-powered signal validation with FULL override authority:
+   - Can APPROVE signals (proceed to Portfolio Manager)
+   - Can REJECT signals (block before Portfolio Manager)
+   - Can OVERRIDE_APPROVE rejected signals (bypass Portfolio Manager rejection)
+   - Adjusts confidence (-0.3 to +0.3) based on market analysis
+   - Adds reasoning to every trading decision
 
 **Trade Logging Services:**
 9. **TradeJournal** - Human-readable trade logging with entry/exit notifications and daily summaries
@@ -209,6 +215,7 @@ The Pattern Agent uses `PatternDetector` service to identify classical chart pat
 ### Signal Flow (Simplified Architecture)
 
 **NO regime-based routing** - All 6 strategies run in parallel, best signal wins.
+**LLM has FULL override authority** - Can approve rejected signals OR reject approved signals.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -236,7 +243,17 @@ The Pattern Agent uses `PatternDetector` service to identify classical chart pat
 │  └─────────────────────────────────────────┘                           │
 │      │                                                                  │
 │      ▼                                                                  │
-│  Best Signal → Portfolio Manager → Risk Manager → Execute              │
+│  ┌─────────────────────────────────────────┐                           │
+│  │  LLM Signal Validator (FULL OVERRIDE)   │                           │
+│  │  - Can APPROVE or REJECT any signal     │                           │
+│  │  - Adjusts confidence (-0.3 to +0.3)    │                           │
+│  │  - Adds reasoning to every decision     │                           │
+│  └─────────────────────────────────────────┘                           │
+│      │                                                                  │
+│      ▼                                                                  │
+│  Portfolio Manager → LLM Override Review → Risk Manager → Execute      │
+│                      ↑                                                  │
+│                      └── Can APPROVE signals rejected by Portfolio Mgr │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -244,14 +261,50 @@ The Pattern Agent uses `PatternDetector` service to identify classical chart pat
 1. **No regime routing** - All strategies always run
 2. **Regime = confidence modifier** - +20% boost if strategy aligns with regime
 3. **AlphaGenerator: boost only** - No rejection, only confidence boost
-4. **Lower threshold** - 0.40 (was 0.50) for more trades
-5. **Multi-symbol** - 5 pairs: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT
+4. **LLM Signal Validator** - Full override authority over all decisions
+5. **Lower threshold** - 0.40 (was 0.50) for more trades
+6. **Multi-symbol** - 5 pairs: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT
 
 **Confidence Boosting (cumulative):**
 - Regime alignment: +20%
 - AlphaGenerator alignment: up to +15%
 - EdgeScanner alignment: up to +10%
-- **Max possible boost: +45%**
+- LLM adjustment: -30% to +30%
+- **Max possible boost: +75%**
+
+### LLM Signal Validation System
+
+The LLM Signal Validator (`LLMSignalValidator`) provides AI-powered decision-making with **full override authority**.
+
+**Roles:**
+1. **Signal Validator** - Analyzes strategy signals before Portfolio Manager
+2. **Reasoning Enhancer** - Adds market context and reasoning to every decision
+3. **Full Decision Maker** - Can override BOTH ways (approve rejected OR reject approved)
+
+**LLM Decisions:**
+- `APPROVE` - Signal proceeds to Portfolio Manager
+- `REJECT` - Signal is blocked (overrides rule-based approval)
+- `OVERRIDE_APPROVE` - Signal approved despite Portfolio Manager rejection
+- `DEFER` - Let rule-based system decide
+
+**Integration Points:**
+1. **Stage 2.7**: LLM validates signals after Alpha/Edge confirmation
+2. **Stage 3.5**: LLM reviews signals rejected by Portfolio Manager
+
+**Key Features:**
+- Rate limiting: 60-second cooldown per symbol
+- Confidence adjustment: -0.3 to +0.3 based on LLM analysis
+- Cache: 5-minute TTL for validation results
+- Fallback: Defers to rules if LLM unavailable
+
+**LLM Prompt Context:**
+- Signal details (action, confidence, price levels)
+- Market context (price, regime, 24h change)
+- Alpha Generator confirmation
+- Edge Scanner signals
+- Key support/resistance levels
+- Smart Money Concepts data
+- Recent trade performance
 
 **TradeJournal Integration:**
 - **Entry notification** sent via Discord when trade opens
@@ -297,7 +350,8 @@ The Pattern Agent uses `PatternDetector` service to identify classical chart pat
 │   │   ├── edge_registry.py       # Statistical edge management
 │   │   ├── edge_scanner.py        # Edge-based signal confirmation
 │   │   ├── kelly_sizer.py         # Fractional Kelly position sizing
-│   │   └── performance_tracker.py # Edge health monitoring
+│   │   ├── performance_tracker.py # Edge health monitoring
+│   │   └── llm_signal_validator.py # LLM signal validation (full override)
 │   ├── agents/            # AI agents
 │   │   ├── mean_reversion.py      # RSI/BB mean reversion (4H)
 │   │   ├── trend_following.py     # VCP/EMA trend following (4H)

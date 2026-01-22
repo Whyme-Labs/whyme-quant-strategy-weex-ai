@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..services.edge_scanner import EdgeScanner
     from ..services.key_level_detector import KeyLevelDetector
     from ..services.smc_detector import SMCDetector
+    from ..services.llm_signal_validator import LLMSignalValidator, LLMDecision
 
 
 class AgentOrchestrator:
@@ -45,6 +46,7 @@ class AgentOrchestrator:
         edge_scanner: Optional["EdgeScanner"] = None,
         key_level_detector: Optional["KeyLevelDetector"] = None,
         smc_detector: Optional["SMCDetector"] = None,
+        llm_validator: Optional["LLMSignalValidator"] = None,
     ):
         """Initialize orchestrator.
 
@@ -54,6 +56,7 @@ class AgentOrchestrator:
             edge_scanner: Optional EdgeScanner for edge-based confirmation
             key_level_detector: Optional KeyLevelDetector for S/R levels
             smc_detector: Optional SMCDetector for Smart Money Concepts
+            llm_validator: Optional LLMSignalValidator for AI-powered signal validation
         """
         self.config = config
         self.agents: Dict[str, BaseAgent] = {}
@@ -65,10 +68,12 @@ class AgentOrchestrator:
         self.edge_scanner = edge_scanner
         self.key_level_detector = key_level_detector
         self.smc_detector = smc_detector
+        self.llm_validator = llm_validator  # LLM Signal Validator with full override authority
         self.last_alpha_signal = None  # Track last alpha signal for logging
         self.last_edge_signals = []  # Track last edge signals for logging
         self.last_key_levels = None  # Track last key levels for logging
         self.last_smc_data = None  # Track last SMC data for logging
+        self.last_llm_validation = None  # Track last LLM validation result
 
     def register_agent(self, name: str, agent: BaseAgent):
         """Register an agent with the orchestrator.
@@ -330,6 +335,61 @@ class AgentOrchestrator:
                         )
                         break  # Only use first matching edge
 
+        # Stage 2.7: LLM Signal Validation (AI-powered decision with FULL override authority)
+        # The LLM can:
+        # 1. APPROVE signals - signal proceeds to Portfolio Manager
+        # 2. REJECT signals - signal is blocked before Portfolio Manager
+        # 3. ADJUST confidence - boost or reduce based on LLM analysis
+        if self.llm_validator and context.get("strategy_proposal"):
+            from ..services.llm_signal_validator import LLMDecision
+
+            # Get recent trades for context (from trade memory if available)
+            recent_trades = []  # Could be populated from trade_memory if needed
+
+            llm_result = await self.llm_validator.validate_signal(
+                signal=context["strategy_proposal"],
+                market_context=context,
+                alpha_result=context.get("alpha_confirmation"),
+                edge_result=context.get("edge_confirmation"),
+                key_levels=context.get("key_levels"),
+                smc_data=context.get("smc"),
+                recent_trades=recent_trades,
+            )
+            context["llm_validation"] = llm_result
+            self.last_llm_validation = llm_result
+
+            # Apply LLM decision
+            if llm_result.decision == LLMDecision.REJECT:
+                # LLM rejected the signal - mark it for Portfolio Manager to skip
+                context["strategy_proposal"]["llm_rejected"] = True
+                context["strategy_proposal"]["llm_rejection_reason"] = llm_result.reasoning
+                logger.info(
+                    f"LLM REJECTED {market_data.get('symbol', 'BTCUSDT')} "
+                    f"{context['strategy_proposal'].get('action', 'unknown').upper()}: "
+                    f"{llm_result.reasoning[:100]}..."
+                )
+            elif llm_result.decision in [LLMDecision.APPROVE, LLMDecision.DEFER]:
+                # LLM approved or deferred - apply confidence adjustment
+                original_confidence = context["strategy_proposal"].get("confidence", 0.5)
+                new_confidence = max(0.0, min(1.0, original_confidence + llm_result.confidence_adjustment))
+                context["strategy_proposal"]["confidence"] = new_confidence
+                context["strategy_proposal"]["llm_reasoning"] = llm_result.reasoning
+                context["strategy_proposal"]["llm_context"] = llm_result.market_context
+                context["strategy_proposal"]["llm_risk"] = llm_result.risk_assessment
+
+                if llm_result.confidence_adjustment != 0:
+                    logger.info(
+                        f"LLM confidence adjustment for {market_data.get('symbol', 'BTCUSDT')}: "
+                        f"{original_confidence:.2f} -> {new_confidence:.2f} "
+                        f"({llm_result.confidence_adjustment:+.2f})"
+                    )
+                if llm_result.decision == LLMDecision.APPROVE:
+                    logger.info(
+                        f"LLM APPROVED {market_data.get('symbol', 'BTCUSDT')} "
+                        f"{context['strategy_proposal'].get('action', 'unknown').upper()}: "
+                        f"{llm_result.reasoning[:100]}..."
+                    )
+
         # Stage 3: Portfolio Management (dynamic confidence threshold)
         # This is the bridge between signals and execution
         if "portfolio_manager" in self.agents:
@@ -337,12 +397,52 @@ class AgentOrchestrator:
             context["portfolio_decision"] = portfolio_result
 
             if not portfolio_result.get("approved", False):
+                rejection_reason = portfolio_result.get('reasoning', 'Unknown rejection reason')
                 logger.info(
-                    f"Trade rejected by portfolio manager: {portfolio_result.get('reasoning')}. "
+                    f"Trade rejected by portfolio manager: {rejection_reason}. "
                     f"Signal confidence: {portfolio_result.get('signal_confidence', 0):.2f}, "
                     f"Threshold: {portfolio_result.get('confidence_threshold', 0):.2f}"
                 )
-                return None
+
+                # Stage 3.5: LLM Override Review for rejected signals
+                # LLM can override Portfolio Manager rejection if it sees opportunity
+                if self.llm_validator and context.get("strategy_proposal"):
+                    from ..services.llm_signal_validator import LLMDecision
+
+                    # Don't review if LLM already rejected
+                    if not context["strategy_proposal"].get("llm_rejected"):
+                        override_result = await self.llm_validator.review_rejected_signal(
+                            signal=context["strategy_proposal"],
+                            rejection_reason=rejection_reason,
+                            market_context=context,
+                        )
+                        context["llm_override_result"] = override_result
+
+                        if override_result.decision == LLMDecision.OVERRIDE_APPROVE:
+                            # LLM overrides the rejection!
+                            logger.info(
+                                f"LLM OVERRIDE APPROVED {market_data.get('symbol', 'BTCUSDT')}: "
+                                f"Original rejection: {rejection_reason[:50]}... | "
+                                f"Override reason: {override_result.override_reason}"
+                            )
+
+                            # Mark signal as LLM override
+                            context["strategy_proposal"]["llm_override"] = True
+                            context["strategy_proposal"]["llm_override_reason"] = override_result.override_reason
+
+                            # Apply confidence adjustment (ensure minimum confidence)
+                            original_confidence = context["strategy_proposal"].get("confidence", 0.5)
+                            new_confidence = max(0.55, original_confidence + override_result.confidence_adjustment)
+                            context["strategy_proposal"]["confidence"] = new_confidence
+
+                            # Continue to Risk Manager (skip normal Portfolio rejection)
+                            portfolio_result["approved"] = True
+                            portfolio_result["llm_override"] = True
+                            portfolio_result["reasoning"] = f"LLM Override: {override_result.override_reason}"
+
+                # If still not approved after LLM review, return None
+                if not portfolio_result.get("approved", False):
+                    return None
 
             # Apply portfolio-adjusted size and TP/SL
             if "adjusted_size" in portfolio_result:
@@ -642,6 +742,9 @@ class AgentOrchestrator:
                 "execution_plan": context.get("execution_plan"),
                 "regime": context.get("regime", {}),
                 "alpha_confirmation": self._serialize_alpha_signal(context.get("alpha_confirmation")),
+                "llm_validation": self._serialize_llm_validation(context.get("llm_validation")),
+                "llm_override": proposal.get("llm_override", False),
+                "llm_override_reason": proposal.get("llm_override_reason"),
             },
         )
 
@@ -694,6 +797,27 @@ class AgentOrchestrator:
             "components": alpha_signal.components,
             "timeframe_alignment": alpha_signal.timeframe_alignment,
             "active_patterns": alpha_signal.active_patterns[:5],
+        }
+
+    def _serialize_llm_validation(self, llm_result) -> Optional[Dict[str, Any]]:
+        """Serialize LLMValidationResult for metadata storage.
+
+        Args:
+            llm_result: LLMValidationResult object or None
+
+        Returns:
+            Dictionary representation or None
+        """
+        if not llm_result:
+            return None
+
+        return {
+            "decision": llm_result.decision.value if hasattr(llm_result.decision, 'value') else str(llm_result.decision),
+            "confidence_adjustment": llm_result.confidence_adjustment,
+            "reasoning": llm_result.reasoning[:500] if llm_result.reasoning else "",
+            "market_context": llm_result.market_context[:200] if llm_result.market_context else "",
+            "risk_assessment": llm_result.risk_assessment[:200] if llm_result.risk_assessment else "",
+            "key_factors": llm_result.key_factors[:5] if llm_result.key_factors else [],
         }
 
     async def _validate_with_alpha_generator(

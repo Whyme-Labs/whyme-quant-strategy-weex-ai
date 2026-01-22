@@ -466,6 +466,30 @@ class PortfolioManagerAgent(BaseAgent):
         regime = context.get("regime", {})
         account_info = context.get("account_info", {})
 
+        # ============================================================
+        # LLM DECISION CHECKS (highest priority)
+        # LLM has FULL override authority over all decisions
+        # ============================================================
+
+        # Check 0.1: LLM Rejection (LLM rejected the signal before Portfolio Manager)
+        if proposal and proposal.get("llm_rejected"):
+            llm_rejection_reason = proposal.get("llm_rejection_reason", "LLM rejected this signal")
+            logger.info(f"PORTFOLIO: Respecting LLM rejection: {llm_rejection_reason[:100]}")
+            return {
+                "decision": ExecutionDecision.REJECT.value,
+                "approved": False,
+                "reasoning": f"LLM rejected: {llm_rejection_reason}",
+                "llm_decision": True,
+            }
+
+        # Check 0.2: LLM Override (LLM approved a previously rejected signal)
+        if proposal and proposal.get("llm_override"):
+            llm_override_reason = proposal.get("llm_override_reason", "LLM approved this signal")
+            llm_confidence = proposal.get("confidence", 0.55)
+            logger.info(f"PORTFOLIO: Respecting LLM override approval: {llm_override_reason[:100]}")
+            # Continue with processing but mark as LLM-approved
+            # The signal will still go through margin/exposure checks but not confidence threshold
+
         # Update portfolio state if account info provided
         if account_info:
             self._update_portfolio_state(account_info)
@@ -603,6 +627,9 @@ class PortfolioManagerAgent(BaseAgent):
             indicators = market_data.get("indicators", {})
             atr = indicators.get("atr") or indicators.get("atr_14")
 
+        # Check if this is an LLM override - skip confidence threshold check
+        is_llm_override = proposal.get("llm_override", False)
+
         # Make final decision with dynamic stop loss
         plan = self._make_execution_decision(
             proposal=proposal,
@@ -612,6 +639,7 @@ class PortfolioManagerAgent(BaseAgent):
             regime=regime,
             key_levels=key_levels,
             atr=atr,
+            skip_confidence_check=is_llm_override,  # LLM overrides skip confidence check
         )
 
         # Log AI decision
@@ -639,6 +667,11 @@ class PortfolioManagerAgent(BaseAgent):
         if is_approved:
             self._record_executed_signal(proposal)
 
+        # Include LLM reasoning in the result if available
+        llm_reasoning = proposal.get("llm_reasoning", "") if proposal else ""
+        llm_context = proposal.get("llm_context", "") if proposal else ""
+        llm_risk = proposal.get("llm_risk", "") if proposal else ""
+
         return {
             "decision": plan.decision.value,
             "approved": is_approved,
@@ -649,6 +682,11 @@ class PortfolioManagerAgent(BaseAgent):
             "signal_confidence": signal_confidence,
             "reasoning": plan.reasoning,
             "portfolio_impact": plan.portfolio_impact,
+            # LLM validation context
+            "llm_reasoning": llm_reasoning,
+            "llm_context": llm_context,
+            "llm_risk": llm_risk,
+            "llm_override": is_llm_override,
         }
 
     def _calculate_dynamic_threshold(self, regime: Dict[str, Any]) -> float:
@@ -750,6 +788,7 @@ class PortfolioManagerAgent(BaseAgent):
         regime: Dict[str, Any],
         key_levels: Optional[Dict[str, Any]] = None,
         atr: Optional[float] = None,
+        skip_confidence_check: bool = False,
     ) -> ExecutionPlan:
         """Make final execution decision with dynamic stop loss.
 
@@ -761,6 +800,7 @@ class PortfolioManagerAgent(BaseAgent):
             regime: Market regime
             key_levels: Support/resistance levels from context
             atr: Average True Range for volatility-based stops
+            skip_confidence_check: If True, skip confidence threshold check (for LLM overrides)
 
         Returns:
             ExecutionPlan with final decision
@@ -776,8 +816,8 @@ class PortfolioManagerAgent(BaseAgent):
         action = proposal.get("action", "buy").lower()
         direction = "long" if action == "buy" else "short"
 
-        # Rule 1: Confidence check
-        if signal_confidence < confidence_threshold:
+        # Rule 1: Confidence check (skip if LLM override)
+        if signal_confidence < confidence_threshold and not skip_confidence_check:
             reasoning_parts.append(
                 f"Signal confidence ({signal_confidence:.2f}) below threshold ({confidence_threshold:.2f})"
             )
@@ -791,6 +831,10 @@ class PortfolioManagerAgent(BaseAgent):
                 signal_confidence=signal_confidence,
                 reasoning=". ".join(reasoning_parts) + ". REJECTED: Insufficient confidence.",
                 portfolio_impact=impact,
+            )
+        elif skip_confidence_check:
+            reasoning_parts.append(
+                f"LLM override: bypassing confidence check (confidence {signal_confidence:.2f}, threshold {confidence_threshold:.2f})"
             )
 
         # Rule 2: Max exposure check

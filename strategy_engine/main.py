@@ -28,6 +28,8 @@ from .services import (
     KeyLevelDetector,
     # Smart Money Concepts
     SMCDetector,
+    # LLM Signal Validation
+    LLMSignalValidator,
 )
 from .agents import (
     MarketAnalystAgent,
@@ -111,6 +113,9 @@ class StrategyEngine:
         # Smart Money Concepts Detector
         self.smc_detector: Optional[SMCDetector] = None
 
+        # LLM Signal Validator (full override authority)
+        self.llm_signal_validator: Optional[LLMSignalValidator] = None
+
     async def initialize(self):
         """Initialize all components."""
         logger.info("Initializing WEEX AI Strategy Engine...")
@@ -185,6 +190,14 @@ class StrategyEngine:
             equal_level_tolerance=0.002,  # 0.2% for equal highs/lows
         )
         logger.info("SMC Detector initialized (Order Blocks, FVG, BOS/CHoCH, Liquidity, Premium/Discount)")
+
+        # Initialize LLM Signal Validator (full override authority)
+        self.llm_signal_validator = LLMSignalValidator(
+            llm_analyzer=self.llm,
+            validation_cooldown=60,  # 60 second cooldown per symbol
+            enable_override=True,  # Allow LLM to override rejected signals
+        )
+        logger.info("LLM Signal Validator initialized (full override authority enabled)")
 
         # Initialize Trade Memory Service (Triple Memory System)
         self.trade_memory = TradeMemoryService(redis_client=self.redis_client)
@@ -294,6 +307,7 @@ class StrategyEngine:
             edge_scanner=self.edge_scanner,
             key_level_detector=self.key_level_detector,
             smc_detector=self.smc_detector,
+            llm_validator=self.llm_signal_validator,  # LLM validation with full override
         )
 
         # Register agents - Regime-based multi-agent architecture
@@ -469,6 +483,10 @@ class StrategyEngine:
             f"- Timeframes: 1H, 4H, 1D (real candles)\n"
             f"- Strategies: Turtle, Trend, MR, Momentum, Pivot\n"
             f"- SMC: Order Blocks, FVG, BOS/CHoCH, Liquidity, Premium/Discount\n\n"
+            f"**LLM Signal Validation:**\n"
+            f"- Model: {self.settings.llm_model}\n"
+            f"- Override Authority: FULL (can approve/reject any signal)\n"
+            f"- Validation Cooldown: 60s per symbol\n\n"
             f"**Self-Evolving RL System:**\n"
             f"- Triple Memory: Episodic, Semantic, Procedural\n"
             f"- Position Monitor: Detects trade closes (60s interval)\n"
