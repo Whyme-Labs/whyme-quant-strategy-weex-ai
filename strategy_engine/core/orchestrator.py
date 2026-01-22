@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..services.key_level_detector import KeyLevelDetector
     from ..services.smc_detector import SMCDetector
     from ..services.llm_signal_validator import LLMSignalValidator, LLMDecision
+    from shared.discord import DiscordNotifier
 
 
 class AgentOrchestrator:
@@ -47,6 +48,7 @@ class AgentOrchestrator:
         key_level_detector: Optional["KeyLevelDetector"] = None,
         smc_detector: Optional["SMCDetector"] = None,
         llm_validator: Optional["LLMSignalValidator"] = None,
+        discord: Optional["DiscordNotifier"] = None,
     ):
         """Initialize orchestrator.
 
@@ -57,6 +59,7 @@ class AgentOrchestrator:
             key_level_detector: Optional KeyLevelDetector for S/R levels
             smc_detector: Optional SMCDetector for Smart Money Concepts
             llm_validator: Optional LLMSignalValidator for AI-powered signal validation
+            discord: Optional DiscordNotifier for sending notifications
         """
         self.config = config
         self.agents: Dict[str, BaseAgent] = {}
@@ -69,6 +72,7 @@ class AgentOrchestrator:
         self.key_level_detector = key_level_detector
         self.smc_detector = smc_detector
         self.llm_validator = llm_validator  # LLM Signal Validator with full override authority
+        self.discord = discord  # Discord notifier for LLM decision alerts
         self.last_alpha_signal = None  # Track last alpha signal for logging
         self.last_edge_signals = []  # Track last edge signals for logging
         self.last_key_levels = None  # Track last key levels for logging
@@ -363,11 +367,22 @@ class AgentOrchestrator:
                 # LLM rejected the signal - mark it for Portfolio Manager to skip
                 context["strategy_proposal"]["llm_rejected"] = True
                 context["strategy_proposal"]["llm_rejection_reason"] = llm_result.reasoning
+                symbol = market_data.get('symbol', 'BTCUSDT')
+                action = context['strategy_proposal'].get('action', 'unknown').upper()
                 logger.info(
-                    f"LLM REJECTED {market_data.get('symbol', 'BTCUSDT')} "
-                    f"{context['strategy_proposal'].get('action', 'unknown').upper()}: "
+                    f"LLM REJECTED {symbol} {action}: "
                     f"{llm_result.reasoning[:100]}..."
                 )
+                # Send Discord notification for LLM rejection
+                if self.discord:
+                    asyncio.create_task(self.discord.send_trace(
+                        f"🤖 **LLM REJECTED Signal**\n"
+                        f"**Symbol:** {symbol}\n"
+                        f"**Action:** {action}\n"
+                        f"**Strategy:** {context['strategy_proposal'].get('strategy', 'unknown')}\n"
+                        f"**Confidence Adj:** {llm_result.confidence_adjustment:+.2f}\n"
+                        f"**Reason:** {llm_result.reasoning[:200]}"
+                    ))
             elif llm_result.decision in [LLMDecision.APPROVE, LLMDecision.DEFER]:
                 # LLM approved or deferred - apply confidence adjustment
                 original_confidence = context["strategy_proposal"].get("confidence", 0.5)
@@ -384,11 +399,22 @@ class AgentOrchestrator:
                         f"({llm_result.confidence_adjustment:+.2f})"
                     )
                 if llm_result.decision == LLMDecision.APPROVE:
+                    symbol = market_data.get('symbol', 'BTCUSDT')
+                    action = context['strategy_proposal'].get('action', 'unknown').upper()
                     logger.info(
-                        f"LLM APPROVED {market_data.get('symbol', 'BTCUSDT')} "
-                        f"{context['strategy_proposal'].get('action', 'unknown').upper()}: "
+                        f"LLM APPROVED {symbol} {action}: "
                         f"{llm_result.reasoning[:100]}..."
                     )
+                    # Send Discord notification for LLM approval
+                    if self.discord:
+                        asyncio.create_task(self.discord.send_trace(
+                            f"✅ **LLM APPROVED Signal**\n"
+                            f"**Symbol:** {symbol}\n"
+                            f"**Action:** {action}\n"
+                            f"**Strategy:** {context['strategy_proposal'].get('strategy', 'unknown')}\n"
+                            f"**Confidence:** {original_confidence:.0%} → {new_confidence:.0%}\n"
+                            f"**Reason:** {llm_result.reasoning[:200]}"
+                        ))
 
         # Stage 3: Portfolio Management (dynamic confidence threshold)
         # This is the bridge between signals and execution
@@ -420,11 +446,21 @@ class AgentOrchestrator:
 
                         if override_result.decision == LLMDecision.OVERRIDE_APPROVE:
                             # LLM overrides the rejection!
+                            symbol = market_data.get('symbol', 'BTCUSDT')
                             logger.info(
-                                f"LLM OVERRIDE APPROVED {market_data.get('symbol', 'BTCUSDT')}: "
+                                f"LLM OVERRIDE APPROVED {symbol}: "
                                 f"Original rejection: {rejection_reason[:50]}... | "
                                 f"Override reason: {override_result.override_reason}"
                             )
+                            # Send Discord notification for LLM override
+                            if self.discord:
+                                asyncio.create_task(self.discord.send_trace(
+                                    f"🔄 **LLM OVERRIDE APPROVED**\n"
+                                    f"**Symbol:** {symbol}\n"
+                                    f"**Action:** {context['strategy_proposal'].get('action', 'unknown').upper()}\n"
+                                    f"**Original Rejection:** {rejection_reason[:100]}\n"
+                                    f"**Override Reason:** {override_result.override_reason or 'LLM sees opportunity'}"
+                                ))
 
                             # Mark signal as LLM override
                             context["strategy_proposal"]["llm_override"] = True

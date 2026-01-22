@@ -308,6 +308,7 @@ class StrategyEngine:
             key_level_detector=self.key_level_detector,
             smc_detector=self.smc_detector,
             llm_validator=self.llm_signal_validator,  # LLM validation with full override
+            discord=self.discord,  # Discord notifications for LLM decisions
         )
 
         # Register agents - Regime-based multi-agent architecture
